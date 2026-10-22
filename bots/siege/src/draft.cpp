@@ -26,7 +26,7 @@ constexpr std::array kPriority{
 void play_draft() {
     static bool wrote_memory = false;
     if (!wrote_memory) {
-        cambc::draft_memory = std::string_view("apex1");
+        cambc::draft_memory = std::string_view("siege1");
         wrote_memory = true;
     }
     const auto chosen = cambc::draft::current_draft(cambc::team::ally);

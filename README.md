@@ -1,6 +1,6 @@
-# Cambridge Battlecode 2026a: apex
+# Cambridge Battlecode 2026a: siege
 
-A `cambc` workspace with **apex**, a C++ bot for the cambc2026a game, plus tools to benchmark it.
+A `cambc` workspace with **siege**, a C++ bot for the cambc2026a game, plus tools to benchmark it. Siege is the successor to apex: same squad farming, plus monolith sieges, a gold-first economy and a fix for maps whose altars are walled in by camps.
 
 ## The game in one minute
 
@@ -16,27 +16,28 @@ A `cambc` workspace with **apex**, a C++ bot for the cambc2026a game, plus tools
 
 The full rules are in `GameRules.md` and the C++ API in `BotAPICpp.md`, both from the competition handbook.
 
-## What apex does
+## What siege does
 
 - **Draft:** Vendetta, Tavi, Ryth, Willow, Marcella. The stuns (Tavi, Ryth, Marcella) cut what camps and enemies deal back. It skips Cassi & Issac: one 600 HP body dying takes both down.
 - **Squad farming:** the team agrees on one dangerous camp group through shared memory. Champions gather and only engage once a fight forecast says the champions present can clear it safely. Gem and gold clusters (which never hit back) go to single champions.
+- **Sieges:** camps never heal, so a group too strong for one fight (a 20,000-health monolith, say) is worn down over up to two trips, with champions rotating home to heal in between. Camps that wall in every altar (the monolith pair on boss-battle) get up to eight trips, since nothing can be tributed until they fall. Champions retreat early enough to walk out of a monolith's five-tile reach.
 - **Camp fights:** focus the strongest camp first. A champion that's taking the hits steps back before it could die, so a teammate becomes the nearest target. It flees camps it can't beat, including ones hitting it from out of sight.
-- **Capture, tribute, shop:** one champion captures each reward. Gems are banked at the nearest open altar. Champions recall when hurt or holding 250+ gold. Damage dealers buy a Monster Strength emblem, then a Durability Health emblem, then Power Strength; tanks start with Jungle Health.
+- **Capture, tribute, shop:** one champion captures each reward. Gems are banked at the nearest open altar. Champions recall when hurt or holding 250+ gold. Damage dealers buy a Treasure Strength emblem (20% more gold), then Monster Strength, Durability Health and Power Strength; tanks start with Jungle Health. Target choice counts each gold as 0.3 gems (up from 0.15), so the team grows stronger sooner.
 - **Altar locks:** every champion buys a lock (10 gold) when home and places it on enemy-side altars it passes (on maps with one or two altars, on any altar), or wherever an enemy is mid-tribute, which cancels their channel. Our own locks never block us; altars with enemy locks are avoided when another is close.
 - **Wards:** champions drop their free ward on groups they capture and at altars they tribute at, so they keep seeing respawns and enemies there after leaving.
 - **PvP:** fights enemies nearby unless clearly outmatched, retreats when personally in danger, and ignores enemies sitting on their own spawn.
 - **Fuel-safe:** map knowledge lives in local bit grids and cached distance fields, so turns stay under budget.
 
-**Results** (release mode, all 40 maps, both sides, 80 games): 80/80 against the official starter bot, averaging about 977 gems to about 80.
+**Results** (release mode, all 40 maps, both sides, 80 games each): 80/80 against the official starter bot (about 987 gems to 74), and a winning record against every earlier apex version, for example 49/80 against the last one.
 
 ## Setup
 
 ```bash
 python3 -m pip install --upgrade cambc
 cambc init --yes .      # refreshes SDK, toolchain and maps
-cambc build apex
-cambc run apex starter-cpp --map 00ambush          # add --view to watch it
-python3 tools/bench.py apex starter-cpp             # all maps, both sides
+cambc build siege
+cambc run siege starter-cpp --map 00ambush          # add --view to watch it
+python3 tools/bench.py siege starter-cpp             # all maps, both sides
 python3 tools/table.py                              # per-map summary of that run
 ```
 
@@ -48,17 +49,17 @@ Debug builds (the default for `cambc run`) print status lines from `LOG(...)` an
 
 ```bash
 cambc login          # sign in with your platform account (session lasts 7 days)
-cambc submit apex    # uploads bots/apex source to your team's submissions
+cambc submit siege   # uploads bots/siege source to your team's submissions
 ```
 
 **Or through the website:**
 
 ```bash
-cambc bundle apex    # writes apex.zip in the current directory
+cambc bundle siege   # writes siege.zip in the current directory
 ```
 
-Then upload `apex.zip` on the submissions page of https://2026a.battlecode.co.uk/. A ready-made copy is kept at `submissions/apex.zip`.
+Then upload `siege.zip` on the submissions page of https://2026a.battlecode.co.uk/. A ready-made copy is kept at `submissions/siege.zip`; `submissions/apex.zip` is the previous version, in case you want to roll back.
 
-The platform compiles the source itself in release mode, so only `bots/apex/src` is sent.
+The platform compiles the source itself in release mode, so only `bots/siege/src` is sent.
 
 Once it's submitted, `cambc ladder` shows the ladder, `cambc matches` lists and downloads your matches, and `cambc match-groups` queues unranked scrims. All three need you to be logged in.

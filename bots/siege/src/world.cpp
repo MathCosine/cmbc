@@ -94,7 +94,15 @@ const bc::distance_field* World::field(int poi_id, std::uint64_t fuel_floor) {
     auto field = std::make_unique<bc::distance_field>();
     bc::bitboard visited;
     const auto roots = poi.roots();
-    field->compute((blocked_board | camp_board) & ~roots, roots, visited);
+    auto camps = camp_board;
+    if (!poi.roots_walkable && !poi.board) {
+        // Altars: a camp beside one may be the only way in once it dies.
+        bc::bitboard beside;
+        beside.clear();
+        for (auto t : poi.tiles) beside.draw_chebyshev(t, 1);
+        camps &= ~beside;
+    }
+    field->compute((blocked_board | camps) & ~roots, roots, visited);
     poi.field = std::move(field);
     return poi.field.get();
 }

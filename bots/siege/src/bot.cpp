@@ -5,6 +5,9 @@
 // Farming is a squad plan shared through team memory: everyone converges on
 // one dangerous group and only engages once the party nearby can clear it,
 // while gem and gold clusters (no damage) are claimed by single champions.
+// Camps never heal, so groups too strong for one fight (monoliths, or the camps
+// walling in every altar) are besieged: the squad wears them down over a few
+// trips, rotating home to heal in between.
 #include "bot.h"
 #include <cmath>
 #include <iostream>
@@ -27,9 +30,14 @@ void mark(const char* phase) {
 } // namespace
 
 namespace {
-constexpr float kGoldWeight = 0.15f;
+constexpr float kGoldWeight = 0.3f;
 constexpr int kCaptureRounds = 5;
 constexpr int kReplanRounds = 8;
+// Camps never heal, so a group too strong for one fight can be worn down over
+// several trips home to heal. Each trip spends about this share of team health.
+constexpr float kTripShare = 0.45f;
+constexpr float kMaxTrips = 2.f;
+constexpr float kMaxUnlockTrips = 8.f;  // opening a walled-in altar is worth more
 constexpr std::uint64_t kPlanFuel = 45000;  // fuel needed before optional planning work
 
 bool tank_type(bc::champion_type t) { return t == bc::champion_type::ryth || t == bc::champion_type::marcella; }
@@ -46,8 +54,11 @@ const std::vector<BuildStep>& build_for(bc::champion_type t) {
                                              {it::monster_shard_of_strength, 5},
                                              {it::durability_shard_of_health, 5},
                                              {it::power_shard_of_strength, 1 << 30}};
-    static const std::vector<BuildStep> dps{
-        {it::monster_shard_of_strength, 5}, {it::durability_shard_of_health, 5}, {it::power_shard_of_strength, 1 << 30}};
+    // Treasure first: 20% more gold compounds into every later shard.
+    static const std::vector<BuildStep> dps{{it::treasure_shard_of_strength, 5},
+                                            {it::monster_shard_of_strength, 5},
+                                            {it::durability_shard_of_health, 5},
+                                            {it::power_shard_of_strength, 1 << 30}};
     return tank_type(t) ? tank : dps;
 }
 
@@ -498,6 +509,7 @@ float Bot::incoming_camp_damage(vec2 at) const {
 
 bool Bot::can_beat(const Group& g) const {
     if (g.harmless) return true;
+    if (siege_ && g.id == target_ && task_ == Task::farm && hp_ > max_hp_ * 0.4f) return true;
     float dps = 0, hp = 0;
     local_power(dps, hp);
     return forecast(g, dps).damage <= hp * 0.8f;
@@ -542,7 +554,11 @@ bool Bot::retreat_from_camps(bc::champion& me) {
     const float incoming = incoming_camp_damage(pos_);
     if (incoming <= 0) return false;
     // Melee need more steps to get out of range than ranged champions.
-    const float buffer = incoming * (ranged_ ? 2.5f : 3.5f) + max_hp_ * 0.08f;
+    // Every step out of reach may cost another hit (monoliths reach five tiles).
+    int steps = 1;
+    for (const auto& c : camps_)
+        if (camp_threatens(c, pos_)) steps = std::max(steps, c.range + 1 - cheb(c.pos, pos_));
+    const float buffer = incoming * std::max(ranged_ ? 2.5f : 3.5f, steps * 0.9f) + max_hp_ * 0.08f;
     if (hp_ > buffer) return false;
     std::vector<std::pair<vec2, int>> threats;
     for (const auto& c : camps_)
@@ -555,6 +571,15 @@ bool Bot::retreat_from_camps(bc::champion& me) {
 
 bool Bot::engage_ready(const Group& g) {
     if (g.awake || g.harmless) return true;
+    if (siege_ && g.id == target_) {
+        float dps = 0, hp = 0;
+        int living = 0;
+        team_power(dps, hp, living);
+        int here = 1;
+        for (const auto& a : allies_seen_)
+            if (cheb(a.pos, g.anchor) <= 8) ++here;
+        return here >= std::max(2, living - 1) || (wait_rounds_ > 15 && here >= 2);
+    }
     float dps = dps_of(type_, strength_, focus_), hp = hp_;
     for (const auto& a : allies_seen_)
         if (cheb(a.pos, g.anchor) <= 7) {
@@ -1288,10 +1313,27 @@ bool Bot::blocks_altar(const Group& g) const {
     return false;
 }
 
+float Bot::siege_rounds(const Group& g, float team_dps, float team_hp, bool unlocks) {
+    // Extra rounds spent going home and back between trips; negative when out of reach.
+    const float damage = forecast(g, team_dps).damage;
+    if (damage <= team_hp * (unlocks ? 0.8f : 0.55f)) return 0;
+    const float trips = damage / std::max(team_hp * kTripShare, 1.f);
+    if (trips > (unlocks ? kMaxUnlockTrips : kMaxTrips)) return -1;
+    auto& W = world();
+    const int home = W.dist(W.spawn_poi, g.anchor, 20000);
+    if (home == kUnreached) return -1;
+    return (std::ceil(trips) - 1) * (2.f * home + 15.f);
+}
+
+bool Bot::any_altar_open() const {
+    for (int i = 0; i < static_cast<int>(world().altars.size()); ++i)
+        if (altar_open(i)) return true;
+    return false;
+}
+
 int Bot::choose_squad_target(float team_dps, float team_hp, int exclude) {
     auto& W = world();
-    bool any_altar_open = false;
-    for (int i = 0; i < static_cast<int>(W.altars.size()) && !any_altar_open; ++i) any_altar_open = altar_open(i);
+    const bool altar_reachable = any_altar_open();
     int best = -1;
     float best_score = 0;
     for (auto& g : W.groups) {
@@ -1301,11 +1343,12 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude) {
         if (comms_.claimed_by_other(slot_, Task::solo, g.id, slots_)) continue;
         const int d = dist_to_group(g);
         // When every altar is walled in by camps, the camps doing it hold the game hostage.
-        const bool unlocks = !any_altar_open && blocks_altar(g);
-        if (forecast(g, team_dps).damage > team_hp * (unlocks ? 0.8f : 0.55f)) continue;
+        const bool unlocks = !altar_reachable && blocks_altar(g);
         if (d == kUnreached) continue;
+        const float extra = siege_rounds(g, team_dps, team_hp, unlocks);
+        if (extra < 0) continue;
         if (!g.alive_by(round_ + d + 15)) continue;
-        float score = (g.value(kGoldWeight) + (unlocks ? 1000.f : 0.f)) / group_rounds(g, team_dps, d);
+        float score = (g.value(kGoldWeight) + (unlocks ? 1000.f : 0.f)) / (group_rounds(g, team_dps, d) + extra);
         // Contested ground near the enemy spawn is riskier.
         if (enemy_side(g)) score *= 0.7f;
         if (score > best_score) {
@@ -1348,9 +1391,10 @@ void Bot::choose_task(bc::champion& me) {
         float living_dps = 0, living_hp = 0;
         int living = 0;
         team_power(living_dps, living_hp, living, true);
+        const bool unlocks = blocks_altar(g) && !any_altar_open();
         const bool stale = g.state == GroupState::reward ||
                            (g.state == GroupState::respawning && g.respawn_round > round_ + 25) ||
-                           forecast(g, living_dps).damage > living_hp * 0.7f;
+                           siege_rounds(g, living_dps, living_hp * 1.25f, unlocks) < 0;
         if (stale || stalled) squad = -1;
     }
     if (squad < 0 && bc::fuel_remaining() > 30000) {
@@ -1388,6 +1432,11 @@ void Bot::choose_task(bc::champion& me) {
         }
     }
 
+    siege_ = false;
+    if (squad >= 0) {
+        const auto& g = W.groups[squad];
+        siege_ = !g.harmless && forecast(g, team_dps).damage > team_hp * 0.55f;
+    }
     float squad_share = 0;
     if (squad >= 0) {
         const auto& g = W.groups[squad];

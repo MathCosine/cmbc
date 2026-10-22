@@ -108,6 +108,8 @@ private:
     int best_altar(int& distance);
     bool altar_open(int index) const;
     bool blocks_altar(const Group& g) const;
+    bool any_altar_open() const;
+    float siege_rounds(const Group& g, float team_dps, float team_hp, bool unlocks);
     void set_status(Task task, int target);
     bool on_spawn() const { return world().ally_spawn.get(pos_); }
 
@@ -166,6 +168,7 @@ private:
     int wait_rounds_ = 0;
     int stuck_rounds_ = 0;
     int altar_choice_ = -1;
+    bool siege_ = false;  // our squad target needs several trips
     bool has_lock_ = false;
     int ward_ready_round_ = 0;
     std::array<int, 32> enemy_lock_round_ = [] {
