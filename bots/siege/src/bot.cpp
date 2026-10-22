@@ -41,6 +41,8 @@ constexpr float kMaxUnlockTrips = 8.f;  // opening a walled-in altar is worth mo
 // Damage taken has to be healed later: a fight costing the whole team's health
 // costs roughly this many trips home and back on top of its own rounds.
 constexpr float kHealCost = 1.0f;
+// Tribute once the bag holds this many gems (or an altar is close): fewer trips, more farming.
+constexpr int kCarryGems = 40;
 constexpr std::uint64_t kPlanFuel = 45000;  // fuel needed before optional planning work
 
 bool tank_type(bc::champion_type t) { return t == bc::champion_type::ryth || t == bc::champion_type::marcella; }
@@ -1141,7 +1143,7 @@ bool Bot::tribute(bc::champion& me) {
     // Close to the finish every carried gem counts: teammates' bags together may win.
     const bool wins = bc::global_submitted_gems(team::ally) + gems_ + 150 >= bc::constants::winning_gems;
     const bool threatened = !enemies_.empty();
-    const bool want = gems_ >= 20 || endgame || wins || d <= 6 || (threatened && gems_ >= 10) ||
+    const bool want = gems_ >= kCarryGems || endgame || wins || d <= 6 || (threatened && gems_ >= 10) ||
                       task_ == Task::other;
     if (!want) return false;
     task_ = Task::other;

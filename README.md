@@ -18,17 +18,17 @@ The full rules are in `GameRules.md` and the C++ API in `BotAPICpp.md`, both fro
 
 ## What siege does
 
-- **Draft:** Vendetta, Tavi, Ryth, Willow, Marcella. The stuns (Tavi, Ryth, Marcella) cut what camps and enemies deal back. It skips Cassi & Issac: one 600 HP body dying takes both down.
+- **Draft:** Vendetta, Vesper Vale, Ryth, Tavi, Marcella. The stuns (Tavi, Ryth, Marcella) cut what camps and enemies deal back, and Vesper Vale earns a third more gold. It skips Cassi & Issac: one 600 HP body dying takes both down.
 - **Squad farming:** the team agrees on one dangerous camp group through shared memory. Targets are scored by value over time, where time includes the trips home to heal the damage the fight will cost, so a young team clears cheap camps first and moves on to big ones as it grows. Champions gather and only engage once a fight forecast says the champions present can clear it safely. Gem and gold clusters (which never hit back) go to single champions.
 - **Sieges:** camps never heal, so a group too strong for one fight (a 20,000-health monolith, say) is worn down over up to two trips, with champions rotating home to heal in between. Camps that wall in every altar (the monolith pair on boss-battle) get up to eight trips, since nothing can be tributed until they fall. Champions retreat early enough to walk out of a monolith's five-tile reach.
 - **Camp fights:** focus the strongest camp first. A champion that's taking the hits steps back before it could die, so a teammate becomes the nearest target. It flees camps it can't beat, including ones hitting it from out of sight.
-- **Capture, tribute, shop:** one champion captures each reward. Gems are banked at the nearest open altar. Champions recall when hurt or holding 250+ gold. Damage dealers buy a Treasure Strength emblem (20% more gold), then Monster Strength, Durability Health and Power Strength; tanks start with Jungle Health. Target choice counts each gold as 0.3 gems (up from 0.15), so the team grows stronger sooner.
+- **Capture, tribute, shop:** one champion captures each reward. Gems are banked at the nearest open altar once a champion carries 40 (or passes close to an altar), so fewer trips interrupt farming. Champions recall when hurt or holding 250+ gold. Damage dealers buy a Treasure Strength emblem (20% more gold), then Monster Strength, Durability Health and Power Strength; tanks start with Jungle Health. Target choice counts each gold as 0.3 gems (up from 0.15), so the team grows stronger sooner.
 - **Altar locks:** every champion buys a lock (10 gold) when home and places it on enemy-side altars it passes (on maps with one or two altars, on any altar), or wherever an enemy is mid-tribute, which cancels their channel. Our own locks never block us; altars with enemy locks are avoided when another is close.
 - **Wards:** champions drop their free ward on groups they capture and at altars they tribute at, so they keep seeing respawns and enemies there after leaving.
 - **PvP:** fights enemies nearby unless clearly outmatched, retreats when personally in danger, and ignores enemies sitting on their own spawn.
 - **Fuel-safe:** map knowledge lives in local bit grids and cached distance fields, so turns stay under budget.
 
-**Results** (release mode, all 40 maps, both sides, 80 games each): 80/80 against the official starter bot (about 987 gems to 74), and a winning record against every earlier version, for example 51/80 against the last apex and 45/80 against the first siege.
+**Results** (release mode, all 40 maps, both sides, 80 games each): 80/80 against the official starter bot (about 987 gems to 74), and a winning record against every earlier version, for example 54/80 against the previous siege.
 
 ## Setup
 
