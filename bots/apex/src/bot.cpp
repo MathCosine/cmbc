@@ -1110,7 +1110,8 @@ bool Bot::tribute(bc::champion& me) {
     const int remaining = static_cast<int>(bc::constants::max_rounds) - round_;
     const int channel = (gems_ + 9) / 10;
     const bool endgame = remaining <= d + channel + 20;
-    const bool wins = bc::global_submitted_gems(team::ally) + gems_ >= bc::constants::winning_gems;
+    // Close to the finish every carried gem counts: teammates' bags together may win.
+    const bool wins = bc::global_submitted_gems(team::ally) + gems_ + 150 >= bc::constants::winning_gems;
     const bool threatened = !enemies_.empty();
     const bool want = gems_ >= 20 || endgame || wins || d <= 6 || (threatened && gems_ >= 10) ||
                       task_ == Task::other;
@@ -1280,8 +1281,17 @@ float Bot::group_rounds(const Group& g, float dps, int travel) const {
     return travel + wait + forecast(g, dps).rounds + kCaptureRounds;
 }
 
+bool Bot::blocks_altar(const Group& g) const {
+    for (auto a : world().altars)
+        for (auto t : g.tiles)
+            if (cheb(a, t) <= 1) return true;
+    return false;
+}
+
 int Bot::choose_squad_target(float team_dps, float team_hp, int exclude) {
     auto& W = world();
+    bool any_altar_open = false;
+    for (int i = 0; i < static_cast<int>(W.altars.size()) && !any_altar_open; ++i) any_altar_open = altar_open(i);
     int best = -1;
     float best_score = 0;
     for (auto& g : W.groups) {
@@ -1290,10 +1300,12 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude) {
         if (round_ < avoid_until_[g.id & 63]) continue;
         if (comms_.claimed_by_other(slot_, Task::solo, g.id, slots_)) continue;
         const int d = dist_to_group(g);
-        if (forecast(g, team_dps).damage > team_hp * 0.55f) continue;
+        // When every altar is walled in by camps, the camps doing it hold the game hostage.
+        const bool unlocks = !any_altar_open && blocks_altar(g);
+        if (forecast(g, team_dps).damage > team_hp * (unlocks ? 0.8f : 0.55f)) continue;
         if (d == kUnreached) continue;
         if (!g.alive_by(round_ + d + 15)) continue;
-        float score = g.value(kGoldWeight) / group_rounds(g, team_dps, d);
+        float score = (g.value(kGoldWeight) + (unlocks ? 1000.f : 0.f)) / group_rounds(g, team_dps, d);
         // Contested ground near the enemy spawn is riskier.
         if (enemy_side(g)) score *= 0.7f;
         if (score > best_score) {

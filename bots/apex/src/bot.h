@@ -107,6 +107,7 @@ private:
     float design_dps(const bc::champion& c, float strength, float focus) const;
     int best_altar(int& distance);
     bool altar_open(int index) const;
+    bool blocks_altar(const Group& g) const;
     void set_status(Task task, int target);
     bool on_spawn() const { return world().ally_spawn.get(pos_); }
 
