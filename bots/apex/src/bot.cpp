@@ -1020,7 +1020,7 @@ int Bot::best_altar(int& distance) {
 bool Bot::go_home(bc::champion& me, bool urgent) {
     if (on_spawn()) return false;
     const bool hurt = hp_ < max_hp_ * 0.4f;
-    const bool rich = gold_ >= 400 || (gold_ >= 240 && hp_ < max_hp_ * 0.6f);
+    const bool rich = gold_ >= 250 || (gold_ >= 150 && hp_ < max_hp_ * 0.6f);
     if (!urgent && !hurt && !rich) return false;
     // Bank gems first when an altar is close.
     if (gems_ > 0 && hp_ > max_hp_ * 0.2f) {
