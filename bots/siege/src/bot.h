@@ -109,6 +109,7 @@ private:
     bool altar_open(int index) const;
     bool blocks_altar(const Group& g) const;
     bool any_altar_open() const;
+    float heal_rounds(const Group& g, float dps, float hp);
     float siege_rounds(const Group& g, float team_dps, float team_hp, bool unlocks);
     void set_status(Task task, int target);
     bool on_spawn() const { return world().ally_spawn.get(pos_); }

@@ -38,6 +38,9 @@ constexpr int kReplanRounds = 8;
 constexpr float kTripShare = 0.45f;
 constexpr float kMaxTrips = 2.f;
 constexpr float kMaxUnlockTrips = 8.f;  // opening a walled-in altar is worth more
+// Damage taken has to be healed later: a fight costing the whole team's health
+// costs roughly this many trips home and back on top of its own rounds.
+constexpr float kHealCost = 1.0f;
 constexpr std::uint64_t kPlanFuel = 45000;  // fuel needed before optional planning work
 
 bool tank_type(bc::champion_type t) { return t == bc::champion_type::ryth || t == bc::champion_type::marcella; }
@@ -1313,6 +1316,15 @@ bool Bot::blocks_altar(const Group& g) const {
     return false;
 }
 
+float Bot::heal_rounds(const Group& g, float dps, float hp) {
+    // Rounds spent getting the damage back: a trip home and back per team's worth of health.
+    if (g.harmless) return 0;
+    auto& W = world();
+    const int home = W.dist(W.spawn_poi, g.anchor, 20000);
+    if (home == kUnreached) return 0;
+    return kHealCost * forecast(g, dps).damage / std::max(hp, 1.f) * (2.f * home + 10.f);
+}
+
 float Bot::siege_rounds(const Group& g, float team_dps, float team_hp, bool unlocks) {
     // Extra rounds spent going home and back between trips; negative when out of reach.
     const float damage = forecast(g, team_dps).damage;
@@ -1348,7 +1360,8 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude) {
         const float extra = siege_rounds(g, team_dps, team_hp, unlocks);
         if (extra < 0) continue;
         if (!g.alive_by(round_ + d + 15)) continue;
-        float score = (g.value(kGoldWeight) + (unlocks ? 1000.f : 0.f)) / (group_rounds(g, team_dps, d) + extra);
+        float score = (g.value(kGoldWeight) + (unlocks ? 1000.f : 0.f)) /
+                      (group_rounds(g, team_dps, d) + extra + heal_rounds(g, team_dps, team_hp));
         // Contested ground near the enemy spawn is riskier.
         if (enemy_side(g)) score *= 0.7f;
         if (score > best_score) {
@@ -1424,7 +1437,7 @@ void Bot::choose_task(bc::champion& me) {
         const int d = dist_to_group(g);
         if (d == kUnreached || d > (squad < 0 ? 60 : 20)) continue;
         if (!g.alive_by(round_ + d + 5)) continue;
-        float score = g.value(kGoldWeight) / group_rounds(g, my_dps, d);
+        float score = g.value(kGoldWeight) / (group_rounds(g, my_dps, d) + heal_rounds(g, my_dps, hp_));
         if (enemy_side(g)) score *= 0.6f;
         if (score > solo_score) {
             solo_score = score;
@@ -1441,7 +1454,8 @@ void Bot::choose_task(bc::champion& me) {
     if (squad >= 0) {
         const auto& g = W.groups[squad];
         const int d = dist_to_group(g);
-        if (d != kUnreached) squad_share = g.value(kGoldWeight) / std::max(active, 1) / group_rounds(g, team_dps, d);
+        if (d != kUnreached)
+            squad_share = g.value(kGoldWeight) / std::max(active, 1) / (group_rounds(g, team_dps, d) + heal_rounds(g, team_dps, team_hp));
     }
 
     if (solo >= 0 && (squad < 0 || solo_score > squad_share * 1.25f)) {
