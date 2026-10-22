@@ -71,6 +71,10 @@ const std::vector<BuildStep>& build_for(bc::champion_type t) {
                                                {it::power_shard_of_strength, 1 << 30}};
     static const std::vector<BuildStep> fighter{
         {it::monster_shard_of_strength, 5}, {it::durability_shard_of_health, 5}, {it::power_shard_of_strength, 1 << 30}};
+    // Spell damage scales with Focus and lands instantly at range 4: stacked Focus
+    // turns a caster's spell into a one-shot, which wins champion fights.
+    static const std::vector<BuildStep> caster{{it::durability_shard_of_health, 5}, {it::power_shard_of_focus, 1 << 30}};
+    if (t == bc::champion_type::marcella) return caster;
     if (tank_type(t)) return tank;
     return bc::champion{t}.base_stats().base_attack_range > 1 ? earner : fighter;
 }
@@ -432,6 +436,22 @@ int Bot::enemy_id(const SeenChamp& e) {
     return static_cast<int>(static_cast<std::uint32_t>(static_cast<bc::handle_champion_t>(e.handle)) & 0x7F);
 }
 
+void Bot::fire_spells(bool retreating) {
+    if (cast_done_ || !can_cast_) return;
+    for (int i = 0; i < static_cast<int>(spells_.size()) && !cast_done_; ++i) {
+        auto& sp = spells_[i];
+        const bool offensive = sp.kind == bc::ability_kind::damage || sp.kind == bc::ability_kind::cc || sp.kind == bc::ability_kind::aoe_damage;
+        if (!offensive || (sp.exclusive && (retreating || moved_))) continue;
+        const SeenChamp* best = nullptr;
+        for (const auto& e : enemies_) {
+            if (world().enemy_spawn.get(e.pos) || cheb(e.pos, pos_) > static_cast<int>(sp.range)) continue;
+            const bool focused = slots_ <= 5 && enemy_id(e) == comms_.focus();
+            if (!best || focused || (e.hp < best->hp && !(slots_ <= 5 && enemy_id(*best) == comms_.focus()))) best = &e;
+        }
+        if (best && spell_ready(i)) cast_on(sp, best->handle);
+    }
+}
+
 bool Bot::fight_enemies(bc::champion& me) {
     if (enemies_.empty()) return false;
     const float my_dps = dps_of(type_, strength_, focus_);
@@ -491,7 +511,11 @@ bool Bot::fight_enemies(bc::champion& me) {
         return acted;
     };
 
-    if ((in_danger || (losing && nearest_d <= nearest->range + 2)) && !can_finish) {
+    const bool retreating = (in_danger || (losing && nearest_d <= nearest->range + 2)) && !can_finish;
+    // Spells reach further than basic attacks (range 4): fire them at the team's focus
+    // enemy, or the weakest in range, before deciding where to walk.
+    fire_spells(retreating);
+    if (retreating) {
         // Shoot first if we cannot get away anyway, then run toward home.
         use_combat_spells(me, nullptr, target);
         set_status(Task::other, kHome);
