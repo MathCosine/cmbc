@@ -1,14 +1,16 @@
 #include "world.h"
 #include <array>
+#include <cstdlib>
 
 World& world() {
     static World instance;
     return instance;
 }
 
-int World::add_poi(const bc::bitboard& roots, bool walkable) {
+int World::add_poi(std::vector<vec2> tiles, const bc::bitboard* board, bool walkable) {
     Poi poi;
-    poi.roots = roots;
+    poi.tiles = std::move(tiles);
+    poi.board = board;
     poi.roots_walkable = walkable;
     pois.push_back(std::move(poi));
     return static_cast<int>(pois.size()) - 1;
@@ -25,12 +27,14 @@ void World::init() {
     altars_grid.load(bc::map::altars(), w, h);
     altars = bc::map::altars().positions();
     spawn_tiles = bc::map::spawn_region(team::ally).positions();
-    group_at.assign(static_cast<std::size_t>(w) * h, -1);
+    group_at.reset(new std::int16_t[static_cast<std::size_t>(w) * h]);
+    camp_at.reset(new std::int16_t[static_cast<std::size_t>(w) * h]);
     camp_board.clear();
 
     // Camp design stats are per kind; query each kind once.
     std::array<std::optional<bc::camp_stats>, 6> kind_stats;
-    for (const auto& raw : bc::map::camp_groups()) {
+    const auto raw_groups = bc::map::camp_groups();
+    for (const auto& raw : raw_groups) {
         Group g;
         g.id = static_cast<int>(groups.size());
         g.handle = raw;
@@ -47,31 +51,31 @@ void World::init() {
             g.strength += info.strength;
             g.max_range = std::max(g.max_range, info.strength > 0 ? info.range : 0);
             g.tiles.push_back(info.pos);
-            group_at[info.pos.y * w + info.pos.x] = g.id;
+            group_at[info.pos.y * w + info.pos.x] = static_cast<std::int16_t>(g.id);
+            camp_at[info.pos.y * w + info.pos.x] = static_cast<std::int16_t>(g.camps.size());
+            camp_board.set(info.pos);
             g.camps.push_back(std::move(info));
         }
         if (g.camps.empty()) continue;
         g.harmless = g.strength <= 0;
+        for (int i = 0; i < static_cast<int>(g.camps.size()); ++i) g.by_strength.push_back(i);
+        std::stable_sort(g.by_strength.begin(), g.by_strength.end(),
+                         [&](int a, int b) { return g.camps[a].strength > g.camps[b].strength; });
         g.hp_left = g.max_hp;
         // Anchor on the tile closest to the group's centre so distances are representative.
         vec2 sum{0, 0};
         for (auto t : g.tiles) sum += t;
         const vec2 centre = sum / static_cast<int>(g.tiles.size());
         g.anchor = *std::min_element(g.tiles.begin(), g.tiles.end(), [&](vec2 a, vec2 b) { return cheb(a, centre) < cheb(b, centre); });
-        const auto tiles = raw.spawn_tiles();
-        camp_board |= tiles;
-        g.poi = add_poi(tiles, true);
+        for (auto t : g.tiles) g.extent = std::max(g.extent, cheb(t, g.anchor));
+        g.poi = add_poi(g.tiles, nullptr, true);
         groups.push_back(std::move(g));
     }
 
-    spawn_poi = add_poi(bc::map::spawn_region(team::ally), true);
-    enemy_spawn_poi = add_poi(enemy_region, false);
-    for (auto altar : altars) {
-        bc::bitboard roots;
-        roots.clear();
-        roots.set(altar);
-        altar_poi.push_back(add_poi(roots, false));
-    }
+    camp_grid.load(camp_board, w, h);
+    spawn_poi = add_poi({}, &bc::map::spawn_region(team::ally), true);
+    enemy_spawn_poi = add_poi({}, &enemy_region, false);
+    for (auto altar : altars) altar_poi.push_back(add_poi({altar}, nullptr, false));
     ready = true;
 }
 
@@ -86,7 +90,8 @@ const bc::distance_field* World::field(int poi_id, std::uint64_t fuel_floor) {
     // Live camps block movement, so routes go around every camp but the target's own.
     auto field = std::make_unique<bc::distance_field>();
     bc::bitboard visited;
-    field->compute((blocked_board | camp_board) & ~poi.roots, poi.roots, visited);
+    const auto roots = poi.roots();
+    field->compute((blocked_board | camp_board) & ~roots, roots, visited);
     poi.field = std::move(field);
     return poi.field.get();
 }
@@ -101,14 +106,20 @@ std::uint16_t World::dist(int poi, vec2 p, std::uint64_t fuel_floor) {
 std::uint16_t World::dist_on(const bc::distance_field& f, vec2 p) const {
     const std::uint16_t here = f.get(p);
     if (here != kUnreached || group_id_at(p) < 0) return here;
-    // Standing on a dead camp's tile, which the fields treat as blocked: step off it first.
-    std::uint16_t best = kUnreached;
-    for (auto d : kDirs) {
-        const vec2 n = p + d;
-        if (!in_bounds(n) || blocked.get(n)) continue;
-        best = std::min(best, f.get(n));
+    // Standing on a dead camp's tile, which the fields treat as blocked: measure from the
+    // nearest open ring around us (a capture can leave us inside a block of camp tiles).
+    for (int r = 1; r <= 3; ++r) {
+        std::uint16_t best = kUnreached;
+        for (int dy = -r; dy <= r; ++dy)
+            for (int dx = -r; dx <= r; ++dx) {
+                if (std::max(std::abs(dx), std::abs(dy)) != r) continue;
+                const vec2 n{p.x + dx, p.y + dy};
+                if (!in_bounds(n) || blocked.get(n)) continue;
+                best = std::min(best, f.get(n));
+            }
+        if (best != kUnreached) return static_cast<std::uint16_t>(best + r);
     }
-    return best == kUnreached ? best : static_cast<std::uint16_t>(best + 1);
+    return kUnreached;
 }
 
 void World::precompute(std::uint64_t fuel_floor) {

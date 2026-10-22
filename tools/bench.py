@@ -60,6 +60,7 @@ def main():
     my_gems = []
     their_gems = []
     my_deaths = 0
+    exhausted = 0
     lines = []
     for m, side, _ in rows:
         path = out / f"{m}-{side}.json"
@@ -77,6 +78,8 @@ def main():
             ids = {r["id"] for r in d["roster"]["champions"] if r["team"] == me_team}
             deaths = sum(int(c["metrics"]["deaths"]) for c in d["champions"] if c["id"] in ids)
         my_deaths += deaths
+        fuel = sum(len(e["entries"]) for e in d["events"] if e["kind"] == "fuelExhausted" and e["owner"].get("team") == me_team)
+        exhausted += fuel
         mine, theirs = gems.get(me_team, 0), gems.get("teamB" if me_team == "teamA" else "teamA", 0)
         my_gems.append(mine)
         their_gems.append(theirs)
@@ -85,12 +88,12 @@ def main():
         losses += not won
         if won:
             won_rounds.append(rounds)
-        lines.append(f"{m:24s} {side}  {'WIN ' if won else 'LOSS'} gems {mine:5d} vs {theirs:5d}  rounds {rounds:5d}  deaths {deaths:3d}")
+        lines.append(f"{m:24s} {side}  {'WIN ' if won else 'LOSS'} gems {mine:5d} vs {theirs:5d}  rounds {rounds:5d}  deaths {deaths:3d}  out-of-fuel {fuel}")
     print("\n".join(lines))
     n = len(rows)
     print(f"\n{args.bot} vs {args.opponent}: {wins}/{n} wins, {losses} losses")
     if my_gems:
-        print(f"avg gems {sum(my_gems) / len(my_gems):.0f} vs {sum(their_gems) / len(their_gems):.0f}; deaths {my_deaths}")
+        print(f"avg gems {sum(my_gems) / len(my_gems):.0f} vs {sum(their_gems) / len(their_gems):.0f}; deaths {my_deaths}; out-of-fuel turns {exhausted}")
     if won_rounds:
         print(f"avg rounds in wins {sum(won_rounds) / len(won_rounds):.0f}")
 

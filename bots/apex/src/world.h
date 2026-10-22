@@ -17,6 +17,7 @@ struct CampInfo {
     // Last observation; reset when the group respawns.
     float hp_known;
     bool alive_known = true;
+    int seen_alive_round = -1;
 };
 
 struct Group {
@@ -25,11 +26,14 @@ struct Group {
     std::vector<CampInfo> camps;
     std::vector<vec2> tiles;
     vec2 anchor;
+    int extent = 0;  // farthest tile from the anchor
     int gems = 0, gold = 0, respawn = 0;
     float max_hp = 0, strength = 0;
     int max_range = 0;
     bool harmless = false;  // every member has zero strength (gem/gold clusters)
     int poi = -1;
+    std::vector<int> by_strength;  // camp indices, strongest first
+    int side = -1;                 // 1 when closer to the enemy spawn; -1 until known
 
     // Knowledge, refreshed whenever the group is in this champion's vision.
     GroupState state = GroupState::alive;
@@ -54,9 +58,17 @@ struct Group {
 
 // Point of interest with a lazily computed terrain-only distance field.
 struct Poi {
-    bc::bitboard roots;
+    std::vector<vec2> tiles;          // the roots; turned into a bitboard only when needed
+    const bc::bitboard* board = nullptr;  // or an engine mask that already holds them
     bool roots_walkable = true;  // false for altars: the roots stay blocked, approach tiles get distance 1
     std::unique_ptr<bc::distance_field> field;
+    bc::bitboard roots() const {
+        if (board) return *board;
+        bc::bitboard b;
+        b.clear();
+        for (auto t : tiles) b.set(t);
+        return b;
+    }
 };
 
 class World {
@@ -69,7 +81,11 @@ public:
     bc::bitboard blocked_board;
     bc::bitboard camp_board;  // every camp spawn tile
     std::vector<Group> groups;
-    std::vector<int> group_at;  // tile -> group id or -1
+    // Tile -> group id / index into that group's camps. Left uninitialised (filling a
+    // large table costs fuel per tile); only read where camp_grid is set.
+    std::unique_ptr<std::int16_t[]> group_at;
+    std::unique_ptr<std::int16_t[]> camp_at;
+    BitGrid camp_grid;
     std::vector<vec2> altars;
     std::vector<int> altar_poi;
     std::vector<vec2> spawn_tiles;
@@ -88,11 +104,15 @@ public:
     // Spend spare fuel precomputing fields, nearest groups first.
     void precompute(std::uint64_t fuel_floor);
 
-    int group_id_at(vec2 p) const { return blocked.in(p) ? group_at[p.y * w + p.x] : -1; }
+    int group_id_at(vec2 p) const { return camp_grid.get(p) ? group_at[p.y * w + p.x] : -1; }
+    CampInfo* camp_info_at(vec2 p) {
+        const int g = group_id_at(p);
+        return g < 0 ? nullptr : &groups[g].camps[camp_at[p.y * w + p.x]];
+    }
     bool in_bounds(vec2 p) const { return blocked.in(p); }
 
 private:
-    int add_poi(const bc::bitboard& roots, bool walkable);
+    int add_poi(std::vector<vec2> tiles, const bc::bitboard* board, bool walkable);
     std::size_t precompute_next = 0;
 };
 

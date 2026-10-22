@@ -8,8 +8,23 @@
 #include "bot.h"
 #include <cmath>
 #include <iostream>
+#include <map>
+#include <string>
 #include <type_traits>
 #include <variant>
+
+namespace {
+// Debug builds record fuel at each phase change to find expensive turns.
+struct FuelMark {
+    const char* phase;
+    std::uint64_t fuel;
+};
+std::vector<FuelMark> g_marks;
+void mark(const char* phase) {
+    g_phase = phase;
+    debug_block({ g_marks.push_back({phase, bc::fuel_remaining()}); });
+}
+} // namespace
 
 namespace {
 constexpr float kGoldWeight = 0.3f;
@@ -80,7 +95,9 @@ float Bot::design_dps(const bc::champion& c, float strength, float focus) const 
 
 void Bot::init(bc::champion& me) {
     auto& W = world();
+    mark("init-world");
     if (!W.ready) W.init();
+    mark("init-allies");
     type_ = me.champion_name();
     const auto stats = me.base_stats();
     range_ = stats.base_attack_range;
@@ -114,7 +131,8 @@ void Bot::init(bc::champion& me) {
     }
     my_design_dps_ = dps_of(type_, stats.base_strength, stats.base_focus);
     // The first turn has double fuel: precompute the trip home and the nearest targets.
-    W.precompute(60000);
+    mark("init-precompute");
+    W.precompute(110000);
     ready_ = true;
 }
 
@@ -123,40 +141,43 @@ void Bot::observe(bc::champion& me) {
     visible_.load(bc::vision::visible_tiles(), W.w, W.h);
     occupancy_loaded_ = false;
 
+    // Camp knowledge comes from native bitboards; only nearby camps get per-camp queries,
+    // since every host call and every loop iteration costs fuel.
+    mark("obs-camps");
+    const auto alive_board = bc::vision::camp_tiles();
+    alive_vis_.load(alive_board, W.w, W.h);
+    awake_vis_.load(bc::vision::awake_camp_tiles(), W.w, W.h);
     camps_.clear();
-    for (const auto& c : bc::vision::camps()) {
-        const float hp = c.health();
+    bc::bitboard near;
+    near.clear();
+    near.draw_chebyshev(pos_, 6);
+    near &= alive_board;
+    for (const vec2 p : near.positions()) {
+        auto* info = W.camp_info_at(p);
+        if (!info) continue;
+        const auto c = bc::vision::camp_at(p);
+        const float hp = info->strength > 0 || cheb(p, pos_) <= range_ + 1 ? c.health() : info->hp_known;
         if (hp <= 0) continue;
-        const auto state = c.state();
-        if (state.is_dead()) continue;
-        const vec2 p = c.spawn_position();
-        const int gid = W.group_id_at(p);
-        float strength = 0;
-        int range = 0;
-        if (gid >= 0)
-            for (const auto& info : W.groups[gid].camps)
-                if (info.pos == p) {
-                    strength = info.strength;
-                    range = info.range;
-                }
-        camps_.push_back({c, p, hp, strength, range, state.is_awake(), gid});
+        info->hp_known = hp;
+        camps_.push_back({c, p, hp, info->strength, info->range, info->strength > 0 && awake_vis_.get(p), W.group_id_at(p)});
     }
 
+    mark("obs-champs");
+    // Strength and Focus only change when items are bought: refresh them now and then.
+    auto seen = [&](const bc::champion& c) {
+        const auto t = c.champion_name();
+        SeenChamp s{c, c.position(), c.health(), c.max_health(), 0, model_for(t).range, 0};
+        auto& cached = dps_cache_[static_cast<std::uint32_t>(static_cast<bc::handle_champion_t>(c)) & 31];
+        if (cached.round < 0 || round_ - cached.round > 25) cached = {dps_of(t, c.strength(), c.focus()), round_};
+        s.dps = cached.dps;
+        return s;
+    };
     enemies_.clear();
-    for (const auto& c : bc::vision::champions(team::enemy)) {
-        const auto t = c.champion_name();
-        SeenChamp s{c, c.position(), c.health(), c.max_health(), 0, model_for(t).range, 0};
-        s.dps = dps_of(t, c.strength(), c.focus());
-        enemies_.push_back(s);
-    }
+    for (const auto& c : bc::vision::champions(team::enemy)) enemies_.push_back(seen(c));
     allies_seen_.clear();
-    for (const auto& c : bc::vision::champions(team::ally)) {
-        if (c == me) continue;
-        const auto t = c.champion_name();
-        SeenChamp s{c, c.position(), c.health(), c.max_health(), 0, model_for(t).range, 0};
-        s.dps = dps_of(t, c.strength(), c.focus());
-        allies_seen_.push_back(s);
-    }
+    for (const auto& c : bc::vision::champions(team::ally))
+        if (!(c == me)) allies_seen_.push_back(seen(c));
+    mark("obs-groups");
     update_groups();
 }
 
@@ -165,42 +186,40 @@ void Bot::update_groups() {
     for (auto& g : W.groups) {
         if (g.state == GroupState::respawning && round_ >= g.respawn_round) g.respawned();
         // Vision reaches 8 tiles; skip groups that cannot be in view.
-        if (cheb(g.anchor, pos_) > 14) continue;
-        bool any_visible = false;
-        for (auto t : g.tiles)
-            if (visible_.get(t)) {
-                any_visible = true;
-                break;
-            }
-        if (!any_visible) continue;
-
+        if (cheb(g.anchor, pos_) > g.extent + 9) continue;
+        // One pass over the group's tiles: which are in view, which still hold a camp.
+        bool any_visible = false, awake = false;
         int alive = 0;
-        bool awake = false;
-        for (auto& info : g.camps) {
-            if (!visible_.get(info.pos)) continue;
-            bool found = false;
-            for (const auto& sc : camps_)
-                if (sc.pos == info.pos) {
-                    found = true;
-                    info.hp_known = sc.hp;
-                    awake |= sc.awake;
-                }
-            info.alive_known = found;
-        }
         float hp_left = 0;
-        for (const auto& info : g.camps)
+        for (auto& info : g.camps) {
+            if (visible_.get(info.pos)) {
+                any_visible = true;
+                info.alive_known = alive_vis_.get(info.pos);
+                if (info.alive_known && info.strength > 0) awake |= awake_vis_.get(info.pos);
+            }
             if (info.alive_known) {
                 ++alive;
                 hp_left += info.hp_known;
             }
+        }
+        if (!any_visible) continue;
         g.seen_round = round_;
-        if (alive > 0) {
-            if (g.state != GroupState::alive) g.state = GroupState::alive;
+        bool visible_alive = false;
+        for (const auto& info : g.camps)
+            if (info.alive_known && visible_.get(info.pos)) {
+                visible_alive = true;
+                break;
+            }
+        if (visible_alive) {
+            g.state = GroupState::alive;
             g.awake = awake;
             g.hp_left = hp_left;
             continue;
         }
         g.awake = false;
+        // Asking the engine is costly for big groups; only do it when the answer can have changed.
+        const bool ask = g.state == GroupState::alive || (g.state == GroupState::reward && round_ % 2 == 0);
+        if (!ask) continue;
         try {
             const auto state = g.handle->state();
             if (std::holds_alternative<bc::map::camp_group_reward_available>(state)) {
@@ -231,8 +250,10 @@ void Bot::set_status(Task task, int target) { comms_.set_slot(slot_, task, targe
 // ---------------------------------------------------------------------------
 // Turn entry
 
+
 void Bot::play_turn() {
     auto& me = bc::self();
+    debug_block({ g_marks.clear(); g_marks.push_back({"start", bc::fuel_remaining()}); });
     if (!ready_) init(me);
     round_ = static_cast<int>(bc::round_number());
     comms_.read();
@@ -242,6 +263,7 @@ void Bot::play_turn() {
 
     const auto state = me.state();
     if (!state.contains(bc::champion_state::alive)) {
+        mark("dead");
         // Dead champions still get a turn to shop.
         gold_ = static_cast<int>(me.gold_count());
         shop(me);
@@ -268,7 +290,7 @@ void Bot::play_turn() {
     can_cast_ = state.contains(bc::champion_state::can_cast);
     // Teammates out of sight are estimated from their base stats times the team's item multiplier.
     comms_.blend_power(dps_of(type_, strength_, focus_) / std::max(my_design_dps_, 1.f));
-    g_phase = "observe";
+    mark("observe");
     observe(me);
     damage_taken_ = last_hp_round_ == round_ - 1 ? std::max(0.f, last_hp_ - hp_) : 0.f;
     last_hp_ = hp_;
@@ -276,51 +298,85 @@ void Bot::play_turn() {
 
     if (state.contains(bc::champion_state::recalling)) {
         set_status(Task::other, kHome);
+        mark("recalling");
     } else if (state.contains(bc::champion_state::submitting_gems)) {
         set_status(Task::other, kTribute);
+        mark("submitting");
     } else if (!state.contains(bc::champion_state::teleporting)) {
         act(me);
     }
+    debug_block({
+        const auto start = g_marks.empty() ? 0 : g_marks.front().fuel;
+        const auto now = bc::fuel_remaining();
+        if (start > now && start - now > 60000) {
+            std::cout << "FUEL r" << round_ << " " << bc::to_string(type_) << " used" << (start - now);
+            for (std::size_t i = 1; i < g_marks.size(); ++i) std::cout << " " << g_marks[i - 1].phase << "=" << (g_marks[i - 1].fuel - g_marks[i].fuel);
+            if (!g_marks.empty()) std::cout << " " << g_marks.back().phase << "=" << (g_marks.back().fuel - now);
+            std::cout << "\n";
+        }
+    });
+    // Debug builds tally where each champion spends its rounds.
+    debug_block({
+        static std::map<std::string, int> activity;
+        ++activity[g_phase];
+        if (round_ % 500 == 0) {
+            std::cout << "P r" << round_ << " " << bc::to_string(type_);
+            for (const auto& [k, v] : activity) std::cout << " " << k << "=" << v;
+            std::cout << "\n";
+        }
+    });
 
     if (round_ % 20 == 0)
         LOG("S r" << round_ << " " << bc::to_string(type_) << " slot" << slot_ << " task" << static_cast<int>(task_) << " t" << target_
                   << " squad" << comms_.squad_target() << " pos" << bc::to_string(pos_) << " hp" << hp_ << "/" << max_hp_
                   << " gems" << gems_ << " gold" << gold_ << " str" << strength_ << " fuel" << bc::fuel_remaining()
                   << " camps" << camps_.size() << " en" << enemies_.size());
+    if (stuck_rounds_ == 15) debug_block({
+        std::cout << "STUCK r" << round_ << " " << bc::to_string(type_) << bc::to_string(pos_) << " phase " << g_phase << " task" << int(task_) << " t" << target_ << " gems" << gems_;
+        if (target_ >= 0 && task_ != Task::other) {
+            const auto& g = world().groups[target_];
+            int vis = 0;
+            for (const auto& c : camps_)
+                if (c.group == target_) ++vis;
+            std::cout << " anchor" << bc::to_string(g.anchor) << " state" << int(g.state) << " vis" << vis << " wait" << wait_rounds_;
+        }
+        std::cout << "\n";
+    });
     stuck_rounds_ = pos_ == last_pos_ ? stuck_rounds_ + 1 : 0;
     last_pos_ = pos_;
     // Spend leftover fuel on distance fields we will need later.
-    g_phase = "precompute";
+    mark("precompute");
     if (bc::fuel_remaining() > kPlanFuel) world().precompute(kPlanFuel - 10000);
 }
 
 void Bot::act(bc::champion& me) {
     const bool at_spawn = on_spawn();
-    g_phase = "shop";
+    mark("shop");
     if (at_spawn || type_ == bc::champion_type::tavi) shop(me);
 
-    g_phase = "enemies";
+    mark("enemies");
     if (fight_enemies(me)) return;
-    g_phase = "flee";
+    mark("flee");
     if (flee_camps(me)) return;
-    g_phase = "retreat";
+    mark("retreat");
     if (retreat_from_camps(me)) return;
-    g_phase = "camps";
+    mark("camps");
     if (fight_camps(me)) return;
     // Spawn heals fully at turn end; stay a turn when hurt.
     if (at_spawn && hp_ < max_hp_ * 0.95f && enemies_.empty()) {
         set_status(Task::other, kHome);
+        mark("heal");
         return;
     }
-    g_phase = "home";
+    mark("home");
     if (go_home(me, false)) return;
-    g_phase = "tribute";
+    mark("tribute");
     if (tribute(me)) return;
-    g_phase = "capture";
+    mark("capture");
     if (capture(me)) return;
-    g_phase = "farm";
+    mark("farm");
     if (farm(me)) return;
-    g_phase = "idle";
+    mark("idle");
     // Nothing to farm: bank whatever we carry.
     if (gems_ > 0) {
         int d = 0;
@@ -860,7 +916,7 @@ bool Bot::travel(bc::champion& me, int poi) {
     const bool walkable = W.pois[poi].roots_walkable;
     if (!f) {
         // No fuel for a field this turn: search locally toward the goal instead.
-        bc::bitboard goal = W.pois[poi].roots;
+        bc::bitboard goal = W.pois[poi].roots();
         if (!walkable) {
             bc::bitboard ring;
             ring.clear();
@@ -870,6 +926,17 @@ bool Bot::travel(bc::champion& me, int poi) {
         return approach(me, goal);
     }
     std::uint16_t here = W.dist_on(*f, pos_);
+    if (here == kUnreached && W.group_id_at(pos_) >= 0) {
+        // Boxed in by camp tiles the static field treats as walls: search the live map.
+        bc::bitboard goal = W.pois[poi].roots();
+        if (!walkable) {
+            bc::bitboard ring;
+            ring.clear();
+            for (auto p : goal.positions()) ring.draw_chebyshev(p, 1);
+            goal = ring;
+        }
+        return approach(me, goal);
+    }
     if (here == kUnreached || here == 0 || (!walkable && here <= 1)) return false;
     if (try_dash_along(me, *f, walkable)) here = W.dist_on(*f, pos_);
     if (here == 0 || (!walkable && here <= 1)) return true;
@@ -887,7 +954,7 @@ bool Bot::travel(bc::champion& me, int poi) {
         if (!occupied_.get(options[i].second) && try_move(me, options[i].second - pos_)) return true;
     // Every downhill tile is taken: route around the blockers.
     if (stuck_rounds_ >= 2 || count > 0) {
-        bc::bitboard goal = W.pois[poi].roots;
+        bc::bitboard goal = W.pois[poi].roots();
         if (!walkable) {
             bc::bitboard ring;
             ring.clear();
@@ -1060,21 +1127,23 @@ bool Bot::capture(bc::champion& me) {
 
 Forecast Bot::forecast(const Group& g, float dps) const {
     dps = std::max(dps, 1.f);
-    std::array<std::pair<float, float>, 32> alive{};  // strength, hp
-    int n = 0;
-    float threat = 0;
-    for (const auto& c : g.camps) {
-        if (!c.alive_known || n >= 32) continue;
-        alive[n++] = {c.strength, c.hp_known};
-        threat += c.strength;
-    }
-    std::sort(alive.begin(), alive.begin() + n, [](const auto& a, const auto& b) { return a.first > b.first; });
     Forecast f{0, 0};
-    for (int i = 0; i < n; ++i) {
-        const float t = alive[i].second / dps;
+    if (g.harmless) {
+        for (const auto& c : g.camps)
+            if (c.alive_known) f.rounds += c.hp_known / dps;
+        return f;
+    }
+    // Camps are pre-sorted strongest first: focus fire kills them in that order.
+    float threat = 0;
+    for (const auto& c : g.camps)
+        if (c.alive_known) threat += c.strength;
+    for (const int i : g.by_strength) {
+        const auto& c = g.camps[i];
+        if (!c.alive_known) continue;
+        const float t = c.hp_known / dps;
         f.rounds += t;
         f.damage += threat * t;
-        threat -= alive[i].first;
+        threat -= c.strength;
     }
     return f;
 }
@@ -1098,8 +1167,23 @@ std::uint16_t Bot::dist_from_me(vec2 p) {
 
 int Bot::dist_to_group(const Group& g) {
     auto& W = world();
-    if (W.has_field(g.poi)) return W.dist(g.poi, pos_);
-    return dist_from_me(g.anchor);
+    auto& cached = group_dist_[g.id & 63];
+    if (cached.round == round_ && cached.pos == pos_) return cached.dist;
+    const int d = W.has_field(g.poi) ? W.dist(g.poi, pos_) : dist_from_me(g.anchor);
+    cached = {d, round_, pos_};
+    return d;
+}
+
+bool Bot::enemy_side(Group& g) {
+    // Terrain distances never change: compute once per group.
+    if (g.side < 0) {
+        auto& W = world();
+        const int mine = W.dist(W.spawn_poi, g.anchor, 30000);
+        const int theirs = W.dist(W.enemy_spawn_poi, g.anchor, 30000);
+        if (mine == kUnreached || theirs == kUnreached) return false;  // try again later
+        g.side = theirs < mine ? 1 : 0;
+    }
+    return g.side == 1;
 }
 
 void Bot::team_power(float& dps, float& hp, int& active) const {
@@ -1135,7 +1219,8 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude) {
     auto& W = world();
     int best = -1;
     float best_score = 0;
-    for (const auto& g : W.groups) {
+    for (auto& g : W.groups) {
+        if (bc::fuel_remaining() < 20000) break;
         if (g.unreachable || g.harmless || g.id > kMaxTarget || g.id == exclude || g.state == GroupState::reward) continue;
         if (comms_.claimed_by_other(slot_, Task::solo, g.id, slots_)) continue;
         const int d = dist_to_group(g);
@@ -1144,9 +1229,7 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude) {
         if (!g.alive_by(round_ + d + 15)) continue;
         float score = g.value(kGoldWeight) / group_rounds(g, team_dps, d);
         // Contested ground near the enemy spawn is riskier.
-        const int mine = W.dist(W.spawn_poi, g.anchor, 30000);
-        const int theirs = W.dist(W.enemy_spawn_poi, g.anchor, 30000);
-        if (theirs != kUnreached && mine != kUnreached && theirs < mine) score *= 0.7f;
+        if (enemy_side(g)) score *= 0.7f;
         if (score > best_score) {
             best_score = score;
             best = g.id;
@@ -1201,7 +1284,7 @@ void Bot::choose_task(bc::champion& me) {
     const float my_dps = dps_of(type_, strength_, focus_);
     int solo = -1;
     float solo_score = 0;
-    for (const auto& g : W.groups) {
+    for (auto& g : W.groups) {
         if (!may_solo) break;
         if (!g.harmless || g.unreachable || g.id > kMaxTarget || g.state == GroupState::reward) continue;
         if (comms_.claimed_by_other(slot_, Task::solo, g.id, slots_) ||
@@ -1213,9 +1296,7 @@ void Bot::choose_task(bc::champion& me) {
         if (d == kUnreached || d > (squad < 0 ? 60 : 20)) continue;
         if (!g.alive_by(round_ + d + 5)) continue;
         float score = g.value(kGoldWeight) / group_rounds(g, my_dps, d);
-        const int theirs = W.dist(W.enemy_spawn_poi, g.anchor, 30000);
-        const int mine = W.dist(W.spawn_poi, g.anchor, 30000);
-        if (theirs != kUnreached && mine != kUnreached && theirs < mine) score *= 0.6f;
+        if (enemy_side(g)) score *= 0.6f;
         if (score > solo_score) {
             solo_score = score;
             solo = g.id;
@@ -1262,16 +1343,27 @@ bool Bot::farm(bc::champion& me) {
     int nearest = 1000;
     for (auto t : g.tiles) nearest = std::min(nearest, cheb(t, pos_));
     const int standoff = ranged_ ? range_ : 1;
-    if (nearest <= standoff + 1 && g.state != GroupState::respawning) {
+    // Near means near on foot: a wall of camps can make a close tile a long walk.
+    const bool near = nearest <= standoff + 1 && W.dist(g.poi, pos_) <= standoff + 3;
+    if (near && g.state != GroupState::respawning) {
         ++wait_rounds_;
+        mark("farm-wait");
         bool any_camp = false;
         for (const auto& c : camps_)
             if (c.group == target_) any_camp = true;
-        if (!any_camp && g.state == GroupState::alive && g.seen_round == round_) {
+        bool tiles_seen = false;
+        for (auto t : g.tiles) tiles_seen |= visible_.get(t);
+        if (!any_camp && g.state == GroupState::alive && tiles_seen) {
             // Everything here is dead but the reward is not visible yet; replan next turn.
             plan_round_ = -1000;
         }
-        if (hazardous(pos_, target_) && can_move_) {
+        if (!any_camp && !tiles_seen) {
+            // Bushes hide the camps: walk right up to them so we can see (and hit) them.
+            bc::bitboard ring;
+            ring.clear();
+            for (auto t : g.tiles) ring.draw_chebyshev(t, 1);
+            approach(me, ring);
+        } else if (hazardous(pos_, target_) && can_move_) {
             // Wait out of reach of the neighbouring groups; enemies may wake them.
             load_occupancy();
             vec2 best = pos_;
@@ -1298,8 +1390,16 @@ bool Bot::farm(bc::champion& me) {
     }
     if (g.state == GroupState::respawning && nearest <= 3) {
         ++wait_rounds_;
+        mark("farm-respawn-wait");
+        // An occupied spawn tile holds back the whole group's respawn: wait beside it.
+        if (W.group_id_at(pos_) == target_) {
+            std::vector<std::pair<vec2, int>> tiles;
+            for (auto t : g.tiles) tiles.push_back({t, 0});
+            step_away(me, tiles);
+        }
         return true;
     }
+    mark("farm-travel");
     travel(me, g.poi);
     return true;
 }

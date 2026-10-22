@@ -73,6 +73,7 @@ private:
     Forecast forecast(const Group& g, float dps) const;
     float group_rounds(const Group& g, float dps, int travel) const;
     int dist_to_group(const Group& g);
+    bool enemy_side(Group& g);
     std::uint16_t dist_from_me(vec2 p);
     bool engage_ready(const Group& g);
     void team_power(float& dps, float& hp, int& active) const;
@@ -139,7 +140,14 @@ private:
     std::vector<SeenCamp> camps_;
     std::vector<SeenChamp> enemies_;
     std::vector<SeenChamp> allies_seen_;
+    struct CachedDps {
+        float dps = 0;
+        int round = -1;
+    };
+    std::array<CachedDps, 32> dps_cache_{};
     BitGrid visible_;
+    BitGrid alive_vis_;
+    BitGrid awake_vis_;
     BitGrid occupied_;
     bc::bitboard occupied_board_;
     bool occupancy_loaded_ = false;
@@ -155,5 +163,11 @@ private:
     int wait_rounds_ = 0;
     int stuck_rounds_ = 0;
     int altar_choice_ = -1;
+    struct CachedDist {
+        int dist = 0;
+        int round = -1;
+        vec2 pos{};
+    };
+    std::array<CachedDist, 64> group_dist_{};
     vec2 last_pos_{-1, -1};
 };
