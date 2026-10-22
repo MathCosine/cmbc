@@ -511,7 +511,13 @@ bool Bot::fight_enemies(bc::champion& me) {
         return acted;
     };
 
-    const bool retreating = (in_danger || (losing && nearest_d <= nearest->range + 2)) && !can_finish;
+    // A champion running alone from a fight its teammates are in is the one that dies:
+    // with two allies beside us and the fight not lost, stay unless nearly dead.
+    int beside = 0;
+    for (const auto& a : allies_seen_)
+        if (cheb(a.pos, pos_) <= 3) ++beside;
+    const bool committed = beside >= 2 && !losing && hp_ > max_hp_ * 0.2f;
+    const bool retreating = (in_danger || (losing && nearest_d <= nearest->range + 2)) && !can_finish && !committed;
     // Spells reach further than basic attacks (range 4): fire them at the team's focus
     // enemy, or the weakest in range, before deciding where to walk.
     fire_spells(retreating);
