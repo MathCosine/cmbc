@@ -2,7 +2,8 @@
 // Team memory layout (8 bytes, shared by every teammate, invisible to the enemy):
 //   byte 0      squad target group + 1 (0 = none)
 //   byte 1      team item multiplier: live damage over base damage, in 1/32 steps
-//   bytes 2..7  one byte per champion slot: task << 6 | (target + 1)
+//   bytes 2..7  one byte per champion slot: task << 6 | (target + 1); with five
+//               champions byte 7 instead holds the enemy everyone focuses (id + 1)
 // A champion's slot is its index in champions(team::ally), which is the same list for everyone.
 #include "util.h"
 #include <array>
@@ -44,6 +45,15 @@ public:
         if (bytes_[1] == value) return;
         bytes_[1] = value;
         bc::shared_memory.write(1, std::span{bytes_.data() + 1, 1});
+    }
+
+    // Byte 7 is free with five champions: the enemy everyone should hit (id + 1, 0 = none).
+    int focus() const { return static_cast<int>(bytes_[7]) - 1; }
+    void set_focus(int id) {
+        const std::uint8_t value = static_cast<std::uint8_t>(std::clamp(id + 1, 0, 255));
+        if (bytes_[7] == value) return;
+        bytes_[7] = value;
+        bc::shared_memory.write(7, std::span{bytes_.data() + 7, 1});
     }
 
     Slot slot(int index) const {

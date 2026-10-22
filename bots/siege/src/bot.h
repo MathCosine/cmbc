@@ -56,6 +56,7 @@ private:
     // Top-level behaviours; each returns true once it has used the turn.
     void act(bc::champion& me);
     bool fight_enemies(bc::champion& me);
+    static int enemy_id(const SeenChamp& e);
     bool fight_camps(bc::champion& me);
     bool flee_camps(bc::champion& me);
     bool retreat_from_camps(bc::champion& me);

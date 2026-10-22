@@ -63,12 +63,16 @@ const std::vector<BuildStep>& build_for(bc::champion_type t) {
                                              {it::monster_shard_of_strength, 5},
                                              {it::durability_shard_of_health, 5},
                                              {it::power_shard_of_strength, 1 << 30}};
-    // Treasure first: 20% more gold compounds into every later shard.
-    static const std::vector<BuildStep> dps{{it::treasure_shard_of_strength, 5},
-                                            {it::monster_shard_of_strength, 5},
-                                            {it::durability_shard_of_health, 5},
-                                            {it::power_shard_of_strength, 1 << 30}};
-    return tank_type(t) ? tank : dps;
+    // Treasure first for the ranged champions who collect most rewards: 20% more of
+    // their gold compounds into every later shard. Melee carries go straight to damage.
+    static const std::vector<BuildStep> earner{{it::treasure_shard_of_strength, 5},
+                                               {it::monster_shard_of_strength, 5},
+                                               {it::durability_shard_of_health, 5},
+                                               {it::power_shard_of_strength, 1 << 30}};
+    static const std::vector<BuildStep> fighter{
+        {it::monster_shard_of_strength, 5}, {it::durability_shard_of_health, 5}, {it::power_shard_of_strength, 1 << 30}};
+    if (tank_type(t)) return tank;
+    return bc::champion{t}.base_stats().base_attack_range > 1 ? earner : fighter;
 }
 
 struct DpsModel {
@@ -424,6 +428,10 @@ void Bot::act(bc::champion& me) {
 // ---------------------------------------------------------------------------
 // Enemy champions
 
+int Bot::enemy_id(const SeenChamp& e) {
+    return static_cast<int>(static_cast<std::uint32_t>(static_cast<bc::handle_champion_t>(e.handle)) & 0x7F);
+}
+
 bool Bot::fight_enemies(bc::champion& me) {
     if (enemies_.empty()) return false;
     const float my_dps = dps_of(type_, strength_, focus_);
@@ -462,6 +470,12 @@ bool Bot::fight_enemies(bc::champion& me) {
     const SeenChamp* target = nullptr;
     for (const auto& e : enemies_)
         if (huntable(e) && cheb(e.pos, pos_) <= reach && (!target || e.hp < target->hp)) target = &e;
+    // Everyone in reach of the team's chosen enemy hits it; otherwise ours becomes the choice.
+    if (slots_ <= 5) {
+        for (const auto& e : enemies_)
+            if (enemy_id(e) == comms_.focus() && huntable(e) && cheb(e.pos, pos_) <= reach) target = &e;
+        if (target) comms_.set_focus(enemy_id(*target));
+    }
     const bool can_finish = target && target->hp <= strength_ * 1.05f;
     const bool in_danger = hp_ < threat * 2.5f + max_hp_ * 0.1f;
 
