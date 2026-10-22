@@ -88,7 +88,8 @@ private:
     bool cast_at(Spell& spell, vec2 tile);
     bool spell_ready(int index);
     bool try_heal(bc::champion& me);
-    void shop(bc::champion& me);
+    void shop(bc::champion& me, bool consumables);
+    void place_lock(bc::champion& me);
 
     // Movement.
     bool travel(bc::champion& me, int poi);
@@ -163,6 +164,12 @@ private:
     int wait_rounds_ = 0;
     int stuck_rounds_ = 0;
     int altar_choice_ = -1;
+    bool has_lock_ = false;
+    std::array<int, 32> enemy_lock_round_ = [] {
+        std::array<int, 32> a{};
+        a.fill(-1000);
+        return a;
+    }();
     std::array<int, 64> avoid_until_{};
     struct CachedDist {
         int dist = 0;

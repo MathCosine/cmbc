@@ -27,6 +27,9 @@ void World::init() {
     altars_grid.load(bc::map::altars(), w, h);
     altars = bc::map::altars().positions();
     spawn_tiles = bc::map::spawn_region(team::ally).positions();
+    ally_centre = spawn_tiles.empty() ? vec2{} : spawn_tiles[spawn_tiles.size() / 2];
+    const auto enemy_tiles = enemy_region.positions();
+    enemy_centre = enemy_tiles.empty() ? vec2{} : enemy_tiles[enemy_tiles.size() / 2];
     group_at.reset(new std::int16_t[static_cast<std::size_t>(w) * h]);
     camp_at.reset(new std::int16_t[static_cast<std::size_t>(w) * h]);
     camp_board.clear();

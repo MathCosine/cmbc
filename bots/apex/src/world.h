@@ -89,6 +89,7 @@ public:
     std::vector<vec2> altars;
     std::vector<int> altar_poi;
     std::vector<vec2> spawn_tiles;
+    vec2 ally_centre{}, enemy_centre{};
     std::vector<Poi> pois;
     int spawn_poi = -1;
     int enemy_spawn_poi = -1;

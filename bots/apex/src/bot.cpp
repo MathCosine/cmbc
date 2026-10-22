@@ -269,7 +269,7 @@ void Bot::play_turn() {
         mark("dead");
         // Dead champions still get a turn to shop.
         gold_ = static_cast<int>(me.gold_count());
-        shop(me);
+        shop(me, true);
         set_status(Task::other, kDead);
         task_ = Task::farm;
         target_ = -1;
@@ -356,7 +356,9 @@ void Bot::play_turn() {
 void Bot::act(bc::champion& me) {
     const bool at_spawn = on_spawn();
     mark("shop");
-    if (at_spawn || type_ == bc::champion_type::tavi) shop(me);
+    if (at_spawn || type_ == bc::champion_type::tavi) shop(me, at_spawn);
+    mark("locks");
+    place_lock(me);
 
     mark("enemies");
     if (fight_enemies(me)) return;
@@ -973,6 +975,40 @@ bool Bot::travel(bc::champion& me, int poi) {
 // ---------------------------------------------------------------------------
 // Home, tribute and capture
 
+void Bot::place_lock(bc::champion& me) {
+    auto& W = world();
+    for (int i = 0; i < static_cast<int>(W.altars.size()) && i < 32; ++i) {
+        const vec2 a = W.altars[i];
+        if (cheb(a, pos_) > 8 || !visible_.get(a)) continue;
+        // Remember enemy locks so tributes go elsewhere.
+        bool locked = bc::vision::has_altar_lock(a);
+        bool ours = false;
+        if (locked) {
+            ours = bc::vision::altar_lock_at(a).is_ally();
+            if (!ours) enemy_lock_round_[i] = round_;
+        } else {
+            enemy_lock_round_[i] = -1000;
+        }
+        if (!has_lock_ || locked || cheb(a, pos_) > 2) continue;
+        // Lock altars the enemy will use: anything when there are only one or two,
+        // otherwise those on their side, and always one an enemy is tributing at.
+        bool channeling = false;
+        for (const auto& e : enemies_)
+            if (cheb(e.pos, a) <= 1 && e.handle.is_submitting_gems()) channeling = true;
+        const bool their_side = cheb(a, W.enemy_centre) <= cheb(a, W.ally_centre);
+        if (!channeling && !their_side && W.altars.size() > 2) continue;
+        bool placed = false;
+        try {
+            placed = me.consumables()[bc::consumable_type::altar_lock].use(a);
+        } catch (const std::exception&) {
+        }
+        if (placed) {
+            has_lock_ = false;
+            enemy_lock_round_[i] = -1000;
+        }
+    }
+}
+
 bool Bot::altar_open(int index) const {
     // Some altars are walled in by camps; they open only once those camps are dead.
     const auto& W = world();
@@ -1007,6 +1043,8 @@ int Bot::best_altar(int& distance) {
         int d = W.dist(W.altar_poi[i], pos_, 15000);
         // Stick with the altar we were walking to unless another is clearly closer.
         if (i == altar_choice_ && d != kUnreached) d -= 3;
+        // An enemy lock costs five attacks to clear: prefer another altar unless far.
+        if (i < 32 && round_ - enemy_lock_round_[i] < 150 && d != kUnreached) d += 12;
         if (d < distance) {
             distance = d;
             best = i;
@@ -1420,7 +1458,16 @@ bool Bot::farm(bc::champion& me) {
 // ---------------------------------------------------------------------------
 // Shopping
 
-void Bot::shop(bc::champion& me) {
+void Bot::shop(bc::champion& me, bool consumables) {
+    // An altar lock (10 gold) blocks enemy tributes, or cancels one in progress.
+    if (consumables && !has_lock_ && gold_ >= 10) {
+        try {
+            me.buy(bc::consumable_type::altar_lock);
+            gold_ -= 10;
+        } catch (const std::exception&) {
+        }
+        has_lock_ = me.consumables()[bc::consumable_type::altar_lock].count() > 0;
+    }
     const auto& build = build_for(type_);
     while (gold_ >= 30 && build_step_ < build.size()) {
         const auto& step = build[build_step_];
