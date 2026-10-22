@@ -37,12 +37,16 @@ constexpr int kReplanRounds = 8;
 // several trips home to heal. Each trip spends about this share of team health.
 constexpr float kTripShare = 0.45f;
 constexpr float kMaxTrips = 2.f;
+constexpr int kSiegeFrom = 500;  // rounds before sieges (other than walled-in altars)
 constexpr float kMaxUnlockTrips = 8.f;  // opening a walled-in altar is worth more
 // Damage taken has to be healed later: a fight costing the whole team's health
 // costs roughly this many trips home and back on top of its own rounds.
 constexpr float kHealCost = 1.0f;
 // Tribute once the bag holds this many gems (or an altar is close): fewer trips, more farming.
 constexpr int kCarryGems = 40;
+// Planning assumes this share of the paper damage: travel, retreats and stragglers
+// halve what a squad really deals (a golem group forecast at 19 rounds took 70).
+constexpr float kFightEfficiency = 0.6f;
 constexpr std::uint64_t kPlanFuel = 45000;  // fuel needed before optional planning work
 
 bool tank_type(bc::champion_type t) { return t == bc::champion_type::ryth || t == bc::champion_type::marcella; }
@@ -1331,6 +1335,8 @@ float Bot::siege_rounds(const Group& g, float team_dps, float team_hp, bool unlo
     // Extra rounds spent going home and back between trips; negative when out of reach.
     const float damage = forecast(g, team_dps).damage;
     if (damage <= team_hp * (unlocks ? 0.8f : 0.55f)) return 0;
+    // A young team besieging a monolith in contested ground loses the early game.
+    if (!unlocks && round_ < kSiegeFrom) return -1;
     const float trips = damage / std::max(team_hp * kTripShare, 1.f);
     if (trips > (unlocks ? kMaxUnlockTrips : kMaxTrips)) return -1;
     auto& W = world();
@@ -1347,6 +1353,7 @@ bool Bot::any_altar_open() const {
 
 int Bot::choose_squad_target(float team_dps, float team_hp, int exclude) {
     auto& W = world();
+    team_dps *= kFightEfficiency;
     const bool altar_reachable = any_altar_open();
     int best = -1;
     float best_score = 0;
