@@ -163,6 +163,7 @@ private:
     int wait_rounds_ = 0;
     int stuck_rounds_ = 0;
     int altar_choice_ = -1;
+    std::array<int, 64> avoid_until_{};
     struct CachedDist {
         int dist = 0;
         int round = -1;

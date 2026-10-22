@@ -556,7 +556,7 @@ bool Bot::engage_ready(const Group& g) {
             hp += a.hp;
         }
     const auto f = forecast(g, dps);
-    const float margin = wait_rounds_ > 25 ? 0.85f : 0.6f;
+    const float margin = wait_rounds_ > 15 ? 0.8f : 0.6f;
     return f.damage <= hp * margin;
 }
 
@@ -1192,7 +1192,8 @@ void Bot::team_power(float& dps, float& hp, int& active) const {
     active = 0;
     for (int i = 0; i < slots_; ++i) {
         const auto s = comms_.slot(i);
-        if (i != slot_ && s.task == Task::other && s.target == kDead) continue;
+        // Dead, recalling or shopping teammates will not be at the fight soon.
+        if (i != slot_ && s.task == Task::other && (s.target == kDead || s.target == kHome)) continue;
         if (i == slot_) {
             dps += dps_of(type_, strength_, focus_);
             hp += max_hp_;
@@ -1222,6 +1223,7 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude) {
     for (auto& g : W.groups) {
         if (bc::fuel_remaining() < 20000) break;
         if (g.unreachable || g.harmless || g.id > kMaxTarget || g.id == exclude || g.state == GroupState::reward) continue;
+        if (round_ < avoid_until_[g.id & 63]) continue;
         if (comms_.claimed_by_other(slot_, Task::solo, g.id, slots_)) continue;
         const int d = dist_to_group(g);
         if (forecast(g, team_dps).damage > team_hp * 0.55f) continue;
@@ -1261,6 +1263,8 @@ void Bot::choose_task(bc::champion& me) {
     int squad = comms_.squad_target();
     if (squad >= static_cast<int>(W.groups.size())) squad = -1;
     const bool stalled = squad >= 0 && target_ == squad && task_ == Task::farm && wait_rounds_ > 20 && !W.groups[squad].awake;
+    // A squad that could not assemble enough strength here should not come straight back.
+    if (stalled) avoid_until_[squad & 63] = round_ + 80;
     if (squad >= 0) {
         const auto& g = W.groups[squad];
         const bool stale = g.state == GroupState::reward ||
