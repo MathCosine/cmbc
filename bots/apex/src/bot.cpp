@@ -42,9 +42,12 @@ struct BuildStep {
 // Five shards of one kind combine into its emblem; the last step repeats forever.
 const std::vector<BuildStep>& build_for(bc::champion_type t) {
     using it = bc::item_type;
-    static const std::vector<BuildStep> tank{
-        {it::jungle_shard_of_health, 5}, {it::monster_shard_of_strength, 5}, {it::power_shard_of_strength, 1 << 30}};
-    static const std::vector<BuildStep> dps{{it::monster_shard_of_strength, 5}, {it::power_shard_of_strength, 1 << 30}};
+    static const std::vector<BuildStep> tank{{it::jungle_shard_of_health, 5},
+                                             {it::monster_shard_of_strength, 5},
+                                             {it::durability_shard_of_health, 5},
+                                             {it::power_shard_of_strength, 1 << 30}};
+    static const std::vector<BuildStep> dps{
+        {it::monster_shard_of_strength, 5}, {it::durability_shard_of_health, 5}, {it::power_shard_of_strength, 1 << 30}};
     return tank_type(t) ? tank : dps;
 }
 
