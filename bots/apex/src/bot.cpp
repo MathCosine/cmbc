@@ -27,7 +27,7 @@ void mark(const char* phase) {
 } // namespace
 
 namespace {
-constexpr float kGoldWeight = 0.3f;
+constexpr float kGoldWeight = 0.15f;
 constexpr int kCaptureRounds = 5;
 constexpr int kReplanRounds = 8;
 constexpr std::uint64_t kPlanFuel = 45000;  // fuel needed before optional planning work
@@ -319,6 +319,7 @@ void Bot::play_turn() {
     debug_block({
         static std::map<std::string, int> activity;
         ++activity[g_phase];
+        if (std::string(g_phase) == "farm-travel" && !moved_) ++activity["travel-still"];
         if (round_ % 500 == 0) {
             std::cout << "P r" << round_ << " " << bc::to_string(type_);
             for (const auto& [k, v] : activity) std::cout << " " << k << "=" << v;
@@ -1186,14 +1187,14 @@ bool Bot::enemy_side(Group& g) {
     return g.side == 1;
 }
 
-void Bot::team_power(float& dps, float& hp, int& active) const {
+void Bot::team_power(float& dps, float& hp, int& active, bool include_home) const {
     dps = 0;
     hp = 0;
     active = 0;
     for (int i = 0; i < slots_; ++i) {
         const auto s = comms_.slot(i);
         // Dead, recalling or shopping teammates will not be at the fight soon.
-        if (i != slot_ && s.task == Task::other && (s.target == kDead || s.target == kHome)) continue;
+        if (i != slot_ && s.task == Task::other && (s.target == kDead || (s.target == kHome && !include_home))) continue;
         if (i == slot_) {
             dps += dps_of(type_, strength_, focus_);
             hp += max_hp_;
@@ -1267,9 +1268,14 @@ void Bot::choose_task(bc::champion& me) {
     if (stalled) avoid_until_[squad & 63] = round_ + 80;
     if (squad >= 0) {
         const auto& g = W.groups[squad];
+        // Only drop the target when it is gone or too strong for the whole living team:
+        // teammates popping home to shop must not send the squad across the map.
+        float living_dps = 0, living_hp = 0;
+        int living = 0;
+        team_power(living_dps, living_hp, living, true);
         const bool stale = g.state == GroupState::reward ||
                            (g.state == GroupState::respawning && g.respawn_round > round_ + 25) ||
-                           forecast(g, team_dps).damage > team_hp * 0.7f;
+                           forecast(g, living_dps).damage > living_hp * 0.7f;
         if (stale || stalled) squad = -1;
     }
     if (squad < 0 && bc::fuel_remaining() > 30000) {

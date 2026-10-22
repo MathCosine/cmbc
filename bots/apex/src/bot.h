@@ -76,7 +76,7 @@ private:
     bool enemy_side(Group& g);
     std::uint16_t dist_from_me(vec2 p);
     bool engage_ready(const Group& g);
-    void team_power(float& dps, float& hp, int& active) const;
+    void team_power(float& dps, float& hp, int& active, bool include_home = false) const;
 
     // Actions.
     bool attack_target(bc::champion& me, const bc::unit& target, vec2 target_pos, float target_hp);
