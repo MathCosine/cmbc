@@ -23,10 +23,11 @@ The full rules are in `GameRules.md` and the C++ API in `BotAPICpp.md`, both fro
 - **Camp fights:** focus the strongest camp first. A champion that's taking the hits steps back before it could die, so a teammate becomes the nearest target. It flees camps it can't beat, including ones hitting it from out of sight.
 - **Capture, tribute, shop:** one champion captures each reward. Gems are banked at the nearest open altar. Champions recall when hurt or holding 250+ gold. Damage dealers buy a Monster Strength emblem, then a Durability Health emblem, then Power Strength; tanks start with Jungle Health.
 - **Altar locks:** every champion buys a lock (10 gold) when home and places it on enemy-side altars it passes (on maps with one or two altars, on any altar), or wherever an enemy is mid-tribute, which cancels their channel. Our own locks never block us; altars with enemy locks are avoided when another is close.
+- **Wards:** champions drop their free ward on groups they capture and at altars they tribute at, so they keep seeing respawns and enemies there after leaving.
 - **PvP:** fights enemies nearby unless clearly outmatched, retreats when personally in danger, and ignores enemies sitting on their own spawn.
 - **Fuel-safe:** map knowledge lives in local bit grids and cached distance fields, so turns stay under budget.
 
-**Results** (release mode, all 40 maps, both sides, 80 games): 80/80 against the official starter bot, averaging about 956 gems to about 75.
+**Results** (release mode, all 40 maps, both sides, 80 games): 80/80 against the official starter bot, averaging about 977 gems to about 80.
 
 ## Setup
 

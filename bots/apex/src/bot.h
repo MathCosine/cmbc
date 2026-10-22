@@ -90,6 +90,7 @@ private:
     bool try_heal(bc::champion& me);
     void shop(bc::champion& me, bool consumables);
     void place_lock(bc::champion& me);
+    void drop_ward(bc::champion& me);
 
     // Movement.
     bool travel(bc::champion& me, int poi);
@@ -165,6 +166,7 @@ private:
     int stuck_rounds_ = 0;
     int altar_choice_ = -1;
     bool has_lock_ = false;
+    int ward_ready_round_ = 0;
     std::array<int, 32> enemy_lock_round_ = [] {
         std::array<int, 32> a{};
         a.fill(-1000);

@@ -1009,6 +1009,24 @@ void Bot::place_lock(bc::champion& me) {
     }
 }
 
+void Bot::drop_ward(bc::champion& me) {
+    // One free ward that recharges over 10 turn ends; a new one replaces the old.
+    if (round_ < ward_ready_round_) return;
+    load_occupancy();
+    for (auto d : kDirs) {
+        const vec2 n = pos_ + d;
+        if (!free_tile(n)) continue;
+        bool placed = false;
+        try {
+            placed = me.place_ward(n);
+        } catch (const std::exception&) {
+        }
+        if (placed) ward_ready_round_ = round_ + bc::constants::ward_cooldown + 1;
+        else ward_ready_round_ = round_ + 3;
+        return;
+    }
+}
+
 bool Bot::altar_open(int index) const {
     // Some altars are walled in by camps; they open only once those camps are dead.
     const auto& W = world();
@@ -1104,6 +1122,7 @@ bool Bot::tribute(bc::champion& me) {
     if (cheb(pos_, altar) <= bc::constants::submit_gems_range) {
         try {
             me.submit_gems(altar);
+            drop_ward(me);
             task_ = Task::farm;
             target_ = -1;
             return true;
@@ -1153,7 +1172,10 @@ bool Bot::capture(bc::champion& me) {
     set_status(Task::capture, target_);
     const auto& g = W.groups[target_];
     for (auto t : g.tiles)
-        if (t == pos_) return true;  // stand still until the reward lands
+        if (t == pos_) {
+            drop_ward(me);  // keep an eye on the group after we leave
+            return true;    // stand still until the reward lands
+        }
     load_occupancy();
     bc::bitboard goal;
     goal.clear();
