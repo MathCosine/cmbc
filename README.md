@@ -18,14 +18,14 @@ The full rules are in `GameRules.md` and the C++ API in `BotAPICpp.md`, both fro
 
 ## What apex does
 
-- **Draft:** Vendetta, Vesper Vale, Varg, Willow, Marcella. It skips Cassi & Issac: one 600 HP body dying takes both down.
+- **Draft:** Vendetta, Tavi, Ryth, Willow, Marcella. The stuns (Tavi, Ryth, Marcella) cut what camps and enemies deal back. It skips Cassi & Issac: one 600 HP body dying takes both down.
 - **Squad farming:** the team agrees on one dangerous camp group through shared memory. Champions gather and only engage once a fight forecast says the champions present can clear it safely. Gem and gold clusters (which never hit back) go to single champions.
 - **Camp fights:** focus the strongest camp first. A champion that's taking the hits steps back before it could die, so a teammate becomes the nearest target. It flees camps it can't beat, including ones hitting it from out of sight.
-- **Capture, tribute, shop:** one champion captures each reward. Gems are banked at the nearest open altar. Champions recall when hurt or holding 400+ gold, then buy Monster then Power Strength shards (tanks get Jungle Health first).
+- **Capture, tribute, shop:** one champion captures each reward. Gems are banked at the nearest open altar. Champions recall when hurt or holding 400+ gold. Damage dealers buy a Monster Strength emblem, then a Durability Health emblem, then Power Strength; tanks start with Jungle Health.
 - **PvP:** fights enemies nearby unless clearly outmatched, retreats when personally in danger, and ignores enemies sitting on their own spawn.
 - **Fuel-safe:** map knowledge lives in local bit grids and cached distance fields, so turns stay under budget.
 
-**Results** (release mode, all 40 maps, both sides, 80 games): it wins 79 of 80 against the official starter bot, averaging about 930 gems to about 130. Against its own first version in self-play it wins about 58 of 80.
+**Results** (release mode, all 40 maps, both sides, 80 games): 80/80 against the official starter bot, averaging about 960 gems to about 120.
 
 ## Setup
 
@@ -55,7 +55,7 @@ cambc submit apex    # uploads bots/apex source to your team's submissions
 cambc bundle apex    # writes apex.zip in the current directory
 ```
 
-Then upload `apex.zip` on the submissions page of https://2026a.battlecode.co.uk/.
+Then upload `apex.zip` on the submissions page of https://2026a.battlecode.co.uk/. A ready-made copy is kept at `submissions/apex.zip`.
 
 The platform compiles the source itself in release mode, so only `bots/apex/src` is sent.
 
