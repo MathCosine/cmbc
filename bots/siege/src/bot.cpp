@@ -1422,6 +1422,23 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude) {
             best = g.id;
         }
     }
+    if (best >= 0) return best;
+    // Nothing dangerous is worth it (clusters only, or every camp respawning): the squad
+    // farms clusters together rather than scattering, which leaves lone champions for
+    // an enemy team to pick off.
+    for (auto& g : W.groups) {
+        if (bc::fuel_remaining() < 20000) break;
+        if (!g.harmless || g.unreachable || g.id > kMaxTarget || g.id == exclude || g.state == GroupState::reward) continue;
+        if (comms_.claimed_by_other(slot_, Task::solo, g.id, slots_)) continue;
+        const int d = dist_to_group(g);
+        if (d == kUnreached || !g.alive_by(round_ + d + 5)) continue;
+        float score = g.value(kGoldWeight) / group_rounds(g, team_dps, d);
+        if (enemy_side(g)) score *= 0.7f;
+        if (score > best_score) {
+            best_score = score;
+            best = g.id;
+        }
+    }
     return best;
 }
 
