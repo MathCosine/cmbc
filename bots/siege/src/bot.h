@@ -65,6 +65,8 @@ private:
     bool hazardous(vec2 p, int except_group) const;
     bool go_home(bc::champion& me, bool urgent);
     bool tribute(bc::champion& me);
+    float tribute_threat() const;
+    bool abandon_tribute(bc::champion& me);
     bool capture(bc::champion& me);
     bool farm(bc::champion& me);
 

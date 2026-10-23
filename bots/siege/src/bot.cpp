@@ -333,6 +333,8 @@ void Bot::play_turn() {
     } else if (state.contains(bc::champion_state::submitting_gems)) {
         set_status(Task::other, kTribute);
         mark("submitting");
+        // A tribute only banks when it completes; dying mid-channel hands the bag to the killer.
+        if (abandon_tribute(me)) act(me);
     } else if (!state.contains(bc::champion_state::teleporting)) {
         act(me);
     }
@@ -1180,6 +1182,42 @@ bool Bot::go_home(bc::champion& me, bool urgent) {
     return travel(me, W.spawn_poi);
 }
 
+float Bot::tribute_threat() const {
+    // Damage per round from enemies that can be on us within two steps.
+    float threat = 0;
+    for (const auto& e : enemies_)
+        if (!world().enemy_spawn.get(e.pos) && cheb(e.pos, pos_) <= e.range + 2) threat += e.dps;
+    return threat;
+}
+
+bool Bot::abandon_tribute(bc::champion& me) {
+    const float threat = tribute_threat();
+    if (threat <= 0) return false;
+    int left = 0;
+    try {
+        left = me.remaining_channel_time();
+    } catch (const std::exception&) {
+        return false;
+    }
+    // Stay if the channel finishes before the enemies here can kill us, or if it wins the game.
+    if (hp_ > threat * (left + 1.5f)) return false;
+    if (static_cast<int>(bc::global_submitted_gems(team::ally)) + gems_ >= static_cast<int>(bc::constants::winning_gems)) return false;
+    try {
+        me.cancel_submit_gems();
+    } catch (const std::exception&) {
+        return false;
+    }
+    const auto state = me.state();
+    can_move_ = state.contains(bc::champion_state::can_move);
+    can_attack_ = state.contains(bc::champion_state::can_attack);
+    can_cast_ = state.contains(bc::champion_state::can_cast);
+    mark("tribute-abort");
+    LOG("TABORT r" << round_ << " " << bc::to_string(type_) << " gems" << gems_ << " left" << left << " hp" << hp_ << " threat" << threat);
+    task_ = Task::farm;
+    target_ = -1;
+    return true;
+}
+
 bool Bot::tribute(bc::champion& me) {
     if (gems_ <= 0) return false;
     int d = 0;
@@ -1199,6 +1237,10 @@ bool Bot::tribute(bc::champion& me) {
     set_status(Task::other, kTribute);
     const vec2 altar = world().altars[a];
     if (cheb(pos_, altar) <= bc::constants::submit_gems_range) {
+        // A channel the enemies here would cut short just hands them the bag.
+        const float threat = tribute_threat();
+        const bool final_bag = static_cast<int>(bc::global_submitted_gems(team::ally)) + gems_ >= static_cast<int>(bc::constants::winning_gems);
+        if (threat > 0 && hp_ <= threat * (channel + 1.5f) && !final_bag) return false;
         try {
             me.submit_gems(altar);
             drop_ward(me);
