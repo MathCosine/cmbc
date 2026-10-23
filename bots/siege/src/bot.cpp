@@ -66,12 +66,17 @@ const std::vector<BuildStep>& build_for(bc::champion_type t) {
                                              {it::power_shard_of_strength, 1 << 30}};
     // Treasure first for the ranged champions who collect most rewards: 20% more of
     // their gold compounds into every later shard. Melee carries go straight to damage.
+    // Jungle (30% less damage from camps) comes before Durability: camps deal most of the
+    // damage a farming champion takes, so it saves trips home to heal.
     static const std::vector<BuildStep> earner{{it::treasure_shard_of_strength, 5},
                                                {it::monster_shard_of_strength, 5},
+                                               {it::jungle_shard_of_health, 5},
                                                {it::durability_shard_of_health, 5},
                                                {it::power_shard_of_strength, 1 << 30}};
-    static const std::vector<BuildStep> fighter{
-        {it::monster_shard_of_strength, 5}, {it::durability_shard_of_health, 5}, {it::power_shard_of_strength, 1 << 30}};
+    static const std::vector<BuildStep> fighter{{it::monster_shard_of_strength, 5},
+                                                {it::jungle_shard_of_health, 5},
+                                                {it::durability_shard_of_health, 5},
+                                                {it::power_shard_of_strength, 1 << 30}};
     // Spell damage scales with Focus and lands instantly at range 4: stacked Focus
     // turns a caster's spell into a one-shot, which wins champion fights.
     static const std::vector<BuildStep> caster{{it::durability_shard_of_health, 5}, {it::power_shard_of_focus, 1 << 30}};
