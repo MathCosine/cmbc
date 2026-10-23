@@ -58,6 +58,7 @@ private:
     bool fight_enemies(bc::champion& me);
     void fire_spells(bool retreating);
     static int enemy_id(const SeenChamp& e);
+    bool harmless_on_spawn(const SeenChamp& e) const;
     bool fight_camps(bc::champion& me);
     bool flee_camps(bc::champion& me);
     bool retreat_from_camps(bc::champion& me);

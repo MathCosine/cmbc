@@ -30,13 +30,13 @@ void mark(const char* phase) {
 } // namespace
 
 namespace {
-constexpr float kGoldWeight = 0.3f;
+constexpr float kGoldWeight = 0.15f;
 constexpr int kCaptureRounds = 5;
 constexpr int kReplanRounds = 8;
 // Camps never heal, so a group too strong for one fight can be worn down over
 // several trips home to heal. Each trip spends about this share of team health.
 constexpr float kTripShare = 0.45f;
-constexpr float kMaxTrips = 2.f;
+constexpr float kMaxTrips = 4.f;
 constexpr int kSiegeFrom = 500;  // rounds before sieges (other than walled-in altars)
 constexpr float kMaxUnlockTrips = 8.f;  // opening a walled-in altar is worth more
 // Damage taken has to be healed later: a fight costing the whole team's health
@@ -47,6 +47,7 @@ constexpr int kCarryGems = 40;
 // Planning assumes this share of the paper damage: travel, retreats and stragglers
 // halve what a squad really deals (a golem group forecast at 19 rounds took 70).
 constexpr float kFightEfficiency = 0.6f;
+constexpr int kRewardTimeout = 8;  // rounds a reward out of sight is assumed to stay uncaptured
 constexpr std::uint64_t kPlanFuel = 45000;  // fuel needed before optional planning work
 
 bool tank_type(bc::champion_type t) { return t == bc::champion_type::ryth || t == bc::champion_type::marcella; }
@@ -215,6 +216,13 @@ void Bot::observe(bc::champion& me) {
 void Bot::update_groups() {
     auto& W = world();
     for (auto& g : W.groups) {
+        // Out of sight a reward does not wait: a teammate (or the enemy) captures it within a
+        // few rounds and the group starts its respawn timer. Without this a champion that left
+        // after the kill would never look at the group again.
+        if (g.state == GroupState::reward && round_ - g.seen_round > kRewardTimeout) {
+            g.state = GroupState::respawning;
+            g.respawn_round = g.seen_round + kCaptureRounds + 1 + g.respawn;
+        }
         if (g.state == GroupState::respawning && round_ >= g.respawn_round) g.respawned();
         // Vision reaches 8 tiles; skip groups that cannot be in view.
         if (cheb(g.anchor, pos_) > g.extent + 9) continue;
@@ -454,6 +462,12 @@ void Bot::fire_spells(bool retreating) {
     }
 }
 
+bool Bot::harmless_on_spawn(const SeenChamp& e) const {
+    // Enemies on their own spawn heal to full every round and cannot be hunted; they only
+    // matter when they can hit us from there.
+    return world().enemy_spawn.get(e.pos) && cheb(e.pos, pos_) > e.range + 1;
+}
+
 bool Bot::fight_enemies(bc::champion& me) {
     if (enemies_.empty()) return false;
     const float my_dps = dps_of(type_, strength_, focus_);
@@ -467,6 +481,7 @@ bool Bot::fight_enemies(bc::champion& me) {
     const SeenChamp* nearest = nullptr;
     int nearest_d = 1000;
     for (const auto& e : enemies_) {
+        if (harmless_on_spawn(e)) continue;
         const int d = cheb(e.pos, pos_);
         if (d <= 8) {
             enemy_dps += e.dps;
@@ -1171,7 +1186,7 @@ bool Bot::go_home(bc::champion& me, bool urgent) {
     for (const auto& c : camps_)
         if (c.awake && c.strength > 0 && cheb(c.pos, pos_) <= c.range + 1) threatened = true;
     for (const auto& e : enemies_)
-        if (cheb(e.pos, pos_) <= 7) threatened = true;
+        if (cheb(e.pos, pos_) <= 7 && !harmless_on_spawn(e)) threatened = true;
     if (!threatened) {
         try {
             me.recall();
