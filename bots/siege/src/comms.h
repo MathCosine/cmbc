@@ -69,11 +69,14 @@ public:
         bc::shared_memory.write(2 + index, std::span{bytes_.data() + 2 + index, 1});
     }
 
+    // Whether another slot claims a group with the given task.
+    bool claimed_by_other(int self, Task task, int group, int slots) const { return claims_by_others(self, task, group, slots) > 0; }
     // Number of other slots claiming a group with the given task.
-    bool claimed_by_other(int self, Task task, int group, int slots) const {
+    int claims_by_others(int self, Task task, int group, int slots) const {
+        int n = 0;
         for (int i = 0; i < slots && i < kMaxSlots; ++i)
-            if (i != self && slot(i).task == task && slot(i).target == group) return true;
-        return false;
+            if (i != self && slot(i).task == task && slot(i).target == group) ++n;
+        return n;
     }
 
 private:
