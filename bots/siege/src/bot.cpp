@@ -50,6 +50,40 @@ constexpr float kFightEfficiency = 0.6f;
 constexpr int kRewardTimeout = 8;  // rounds a reward out of sight is assumed to stay uncaptured
 constexpr std::uint64_t kPlanFuel = 45000;  // fuel needed before optional planning work
 
+// Staying alive. Most deaths come from enemy champions, mostly alone, and every one costs
+// 60 rounds out plus the walk back. Each switch was tested on its own against seven local
+// sparring bots (560 games) and head to head against the version without them. Only careful
+// mode helped (469 vs 454, 42/80); the others cost more farming than the deaths they saved
+// and are off: escort 439, danger memory 428, contested 451, small bags 451, burst 432,
+// shunning the enemy half 451. All seven together farmed 10% slower even with no enemy around.
+// After two team deaths, a champion that has just respawned waits on spawn for a teammate
+// instead of walking back out alone (28 of 61 deaths on hooks came right after a respawn).
+constexpr bool kEscort = false;
+constexpr int kEscortWindow = 120;  // team deaths this recent mean the enemy is winning fights
+constexpr int kEscortWait = 40;     // longest wait on spawn before going anyway
+// Targets near where we died lately, or where 2+ enemies were seen, score lower; a squad
+// target we died beside is dropped, so the whole squad moves on, not just us.
+constexpr bool kDangerMemory = false;
+// Camps about as far from the enemy spawn as from ours are where both teams meet.
+constexpr bool kContested = false;
+constexpr float kContestedFactor = 0.7f;
+// A team that keeps killing us (3+ deaths in 150 rounds) gets a careful game: small bags,
+// our own half, earlier trips home, no even fights.
+constexpr bool kPressureMode = true;
+constexpr int kPressureDeaths = 3;
+constexpr int kPressureWindow = 150;
+// Smaller bags: the killer takes the whole bag. Bank at 20 gems (10 with enemies seen in
+// the last 20 rounds), bank a 50+ bag before fighting camps, and share big rewards.
+constexpr bool kSmallBags = false;
+constexpr int kSmallCarry = 20;
+constexpr int kRecentEnemy = 20;
+constexpr int kSmallBag = 10;
+constexpr int kBigBag = 50;
+// Judge a fight by what can land on us next turn (spell nukes included), not averaged damage.
+constexpr bool kBurstModel = false;
+// Camps nearer the enemy spawn: score x0.35 solo and x0.45 for the squad (0.6 and 0.7 before).
+constexpr bool kShunEnemySide = false;
+
 bool tank_type(bc::champion_type t) { return t == bc::champion_type::ryth || t == bc::champion_type::marcella; }
 
 struct BuildStep {
@@ -123,6 +157,53 @@ const DpsModel& model_for(bc::champion_type type) {
 float dps_of(bc::champion_type type, float strength, float focus) {
     const auto& m = model_for(type);
     return strength * m.strength + focus * m.focus;
+}
+
+// One-turn threat, unlike DpsModel which averages spells over their cooldown: a Stellar
+// or Marcella with stacked Focus nukes for several times its averaged damage in one turn.
+struct ThreatModel {
+    int reach = 1;       // tiles from which it can hurt us on its next turn
+    float strength = 1;  // basic attacks per turn (2 with an attack reset)
+    float focus = 0;     // biggest single-cast Focus multiplier
+};
+
+const ThreatModel& threat_for(bc::champion_type type) {
+    static std::array<std::optional<ThreatModel>, 13> cache;
+    auto& slot = cache[static_cast<int>(type)];
+    if (slot) return *slot;
+    bc::champion design{type};
+    const int range = design.base_stats().base_attack_range;
+    ThreatModel t;
+    // Ranged champions cannot walk and shoot in one turn; melee can step then hit.
+    t.reach = range > 1 ? range : range + 1;
+    for (const auto& ab : design.abilities()) {
+        const auto& info = ab.info();
+        if (!info) continue;
+        std::visit([&](const auto& p) {
+            using T = std::decay_t<decltype(p)>;
+            const int walk = p.exclusive_with_movement ? 0 : 1;
+            if constexpr (std::is_same_v<T, bc::ability_attack_reset>) {
+                t.strength = 2;
+            } else if constexpr (std::is_same_v<T, bc::ability_damage> || std::is_same_v<T, bc::ability_cc>) {
+                t.focus = std::max(t.focus, p.modifier);
+                t.reach = std::max(t.reach, static_cast<int>(p.range) + walk);
+            } else if constexpr (std::is_same_v<T, bc::ability_aoe_damage>) {
+                t.focus = std::max(t.focus, p.modifier);
+                t.reach = std::max(t.reach, static_cast<int>(p.range + p.radius) + walk);
+            } else if constexpr (std::is_same_v<T, bc::ability_dash>) {
+                t.focus = std::max(t.focus, p.modifier);
+                // Dash in, then hit with the landing or a basic attack.
+                t.reach = std::max(t.reach, static_cast<int>(p.range) + std::max(static_cast<int>(p.radius), range));
+            }
+        }, *info);
+    }
+    slot = t;
+    return *slot;
+}
+
+float burst_of(bc::champion_type type, float strength, float focus) {
+    const auto& t = threat_for(type);
+    return strength * t.strength + focus * t.focus;
 }
 } // namespace
 
@@ -203,21 +284,29 @@ void Bot::observe(bc::champion& me) {
     }
 
     mark("obs-champs");
-    // Strength and Focus only change when items are bought: refresh them now and then.
-    auto seen = [&](const bc::champion& c) {
+    // Strength and Focus change when items are bought (and Prism's Focus with every gem it
+    // carries): with the burst model, enemies are refreshed often and allies now and then.
+    auto seen = [&](const bc::champion& c, bool enemy) {
         const auto t = c.champion_name();
         SeenChamp s{c, c.position(), c.health(), c.max_health(), 0, model_for(t).range, 0};
         auto& cached = dps_cache_[static_cast<std::uint32_t>(static_cast<bc::handle_champion_t>(c)) & 31];
-        if (cached.round < 0 || round_ - cached.round > 25) cached = {dps_of(t, c.strength(), c.focus()), round_};
+        const int refresh = kBurstModel && enemy ? 5 : 25;
+        if (cached.round < 0 || round_ - cached.round > refresh) {
+            const float strength = c.strength(), focus = c.focus();
+            cached = {dps_of(t, strength, focus), burst_of(t, strength, focus), round_};
+        }
         s.dps = cached.dps;
+        s.burst = cached.burst;
+        s.reach = threat_for(t).reach;
         return s;
     };
     enemies_.clear();
-    for (const auto& c : bc::vision::champions(team::enemy)) enemies_.push_back(seen(c));
+    for (const auto& c : bc::vision::champions(team::enemy)) enemies_.push_back(seen(c, true));
+    note_sightings();
     allies_seen_.clear();
     for (const auto& c : bc::vision::champions(team::ally)) {
         if (c == me) continue;
-        allies_seen_.push_back(seen(c));
+        allies_seen_.push_back(seen(c, false));
         // Health shards only add: keep the most a teammate has shown, so the team's
         // forecasts count its items while it is out of sight.
         for (int i = 0; i < slots_; ++i)
@@ -300,6 +389,85 @@ bool Bot::free_tile(vec2 p) const {
 
 void Bot::set_status(Task task, int target) { comms_.set_slot(slot_, task, target); }
 
+void Bot::note_sightings() {
+    int count = 0;
+    vec2 sum{0, 0};
+    for (const auto& e : enemies_) {
+        // Enemies on their own spawn are shopping or healing, not hunting us.
+        if (world().enemy_spawn.get(e.pos)) continue;
+        sum += e.pos;
+        ++count;
+    }
+    if (count == 0) return;
+    last_enemy_round_ = round_;
+    const vec2 centre = sum / count;
+    // Merge with a recent nearby record rather than filling the buffer every round.
+    for (auto& s : sightings_)
+        if (round_ - s.round <= 5 && cheb(s.pos, centre) <= 4) {
+            s = {centre, round_, std::max(s.count, count)};
+            return;
+        }
+    sightings_[sighting_next_] = {centre, round_, count};
+    sighting_next_ = (sighting_next_ + 1) % static_cast<int>(sightings_.size());
+}
+
+float Bot::danger_factor(vec2 p) const {
+    // Champions used to respawn and walk straight back to where they died, one at a time,
+    // and die again (every death on lost-world was at the same spot between the spawns).
+    if (!kDangerMemory) return 1;
+    float f = 1;
+    if (round_ - death_round_ <= 100 && cheb(death_pos_, p) <= 8) f *= 0.3f;
+    for (const auto& s : sightings_)
+        if (s.count >= 2 && round_ - s.round <= 25 && cheb(s.pos, p) <= 10) {
+            f *= 0.4f;
+            break;
+        }
+    return f;
+}
+
+float Bot::target_danger(Group& g) {
+    // Our own half is where we have to farm: recent danger there only halves the score.
+    const bool theirs = enemy_side(g);
+    const float f = danger_factor(g.anchor);
+    return (theirs ? f : std::sqrt(f)) * (kContested && g.contested ? kContestedFactor : 1.f);
+}
+
+int Bot::recent_team_deaths(int window) const {
+    int n = 0;
+    for (int r : team_deaths_)
+        if (round_ - r <= window) ++n;
+    return n;
+}
+
+bool Bot::pressured() const { return kPressureMode && recent_team_deaths(kPressureWindow) >= kPressureDeaths; }
+
+bool Bot::enemy_passive() const { return round_ > 300 && !enemy_recent(250) && recent_team_deaths(400) == 0; }
+
+int Bot::carry_gems() const {
+    if (pressured()) return kSmallBag;
+    return kSmallBags ? kSmallCarry : kCarryGems;
+}
+
+float Bot::enemy_side_factor(bool solo) const {
+    // Ground near the enemy spawn is where we lose champions: shun it when a team is hunting
+    // us, and farm it when the other team never shows up.
+    if (pressured()) return solo ? 0.1f : 0.15f;
+    if (!kShunEnemySide) return solo ? 0.6f : 0.7f;
+    if (enemy_passive()) return solo ? 0.7f : 0.8f;
+    return solo ? 0.35f : 0.45f;
+}
+
+bool Bot::wait_for_escort() {
+    // A champion that respawns and walks back out alone into a team holding our half dies
+    // again. Once teammates have been dying, leave spawn with someone.
+    if (!kEscort || !on_spawn()) return false;
+    if (round_ - respawn_round_ > kEscortWait) return false;
+    if (recent_team_deaths(kEscortWindow) < 2) return false;
+    for (const auto& a : allies_seen_)
+        if (cheb(a.pos, pos_) <= 4) return false;
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // Turn entry
 
@@ -310,6 +478,16 @@ void Bot::play_turn() {
     if (!ready_) init(me);
     round_ = static_cast<int>(bc::round_number());
     comms_.read();
+    // Team deaths, from slots switching to "dead" in team memory.
+    for (int i = 0; i < slots_ && i < kMaxSlots; ++i) {
+        const auto st = comms_.slot(i);
+        const bool dead = st.task == Task::other && st.target == kDead;
+        if (dead && !slot_dead_[i]) {
+            team_deaths_[team_death_next_] = round_;
+            team_death_next_ = (team_death_next_ + 1) % static_cast<int>(team_deaths_.size());
+        }
+        slot_dead_[i] = dead;
+    }
     moved_ = false;
     cast_done_ = false;
     ready_cache_ = {-1, -1};
@@ -317,6 +495,12 @@ void Bot::play_turn() {
     const auto state = me.state();
     if (!state.contains(bc::champion_state::alive)) {
         mark("dead");
+        if (was_alive_) {
+            // pos_ still holds where we stood on our last living turn.
+            death_pos_ = pos_;
+            death_round_ = round_;
+            was_alive_ = false;
+        }
         // Dead champions still get a turn to shop.
         gold_ = static_cast<int>(me.gold_count());
         shop(me, true);
@@ -326,6 +510,8 @@ void Bot::play_turn() {
         return;
     }
 
+    if (!was_alive_) respawn_round_ = round_;
+    was_alive_ = true;
     // A respawned champion still shows as dead to the team until it says otherwise.
     if (slot_ >= 0) {
         const auto mine = comms_.slot(slot_);
@@ -419,12 +605,23 @@ void Bot::act(bc::champion& me) {
     if (flee_camps(me)) return;
     mark("retreat");
     if (retreat_from_camps(me)) return;
+    // A big bag is a target: bank it before picking another fight (one champion who
+    // captured 193 gems alone died seven rounds later and handed them over).
+    if (kSmallBags && gems_ >= kBigBag && incoming_camp_damage(pos_) <= 0) {
+        mark("bank");
+        if (tribute(me)) return;
+    }
     mark("camps");
     if (fight_camps(me)) return;
     // Spawn heals fully at turn end; stay a turn when hurt.
     if (at_spawn && hp_ < max_hp_ * 0.95f && enemies_.empty()) {
         set_status(Task::other, kHome);
         mark("heal");
+        return;
+    }
+    if (at_spawn && wait_for_escort()) {
+        set_status(Task::other, kHome);
+        mark("escort");
         return;
     }
     mark("home");
@@ -480,7 +677,7 @@ void Bot::fire_spells(bool retreating) {
 bool Bot::harmless_on_spawn(const SeenChamp& e) const {
     // Enemies on their own spawn heal to full every round and cannot be hunted; they only
     // matter when they can hit us from there.
-    return world().enemy_spawn.get(e.pos) && cheb(e.pos, pos_) > e.range + 1;
+    return world().enemy_spawn.get(e.pos) && cheb(e.pos, pos_) > (kBurstModel ? e.reach : e.range) + 1;
 }
 
 bool Bot::fight_enemies(bc::champion& me) {
@@ -492,28 +689,46 @@ bool Bot::fight_enemies(bc::champion& me) {
             ally_dps += a.dps;
             ally_hp += a.hp;
         }
-    float enemy_dps = 0, enemy_hp = 0, threat = 0;
+    float enemy_dps = 0, enemy_hp = 0, threat = 0, burst = 0;
     const SeenChamp* nearest = nullptr;
     int nearest_d = 1000;
+    // With the burst model we also look at groups 8-10 tiles out, to leave before they arrive.
+    const int sense = kBurstModel ? 10 : 8;
     for (const auto& e : enemies_) {
         if (harmless_on_spawn(e)) continue;
         const int d = cheb(e.pos, pos_);
-        if (d <= 8) {
+        if (d <= sense) {
             enemy_dps += e.dps;
             enemy_hp += e.hp;
         }
         if (d <= e.range + 1) threat += e.dps;
+        // What could land on us before our next turn if we stay here.
+        if (d <= e.reach) burst += e.burst;
         if (d < nearest_d) {
             nearest_d = d;
             nearest = &e;
         }
     }
-    if (!nearest || nearest_d > 7) return false;
+    if (!nearest || nearest_d > (kBurstModel ? 10 : 7)) return false;
 
     // Rounds for each side to wipe the other if everyone nearby commits.
     const float we_need = enemy_hp / std::max(ally_dps, 1.f);
     const float they_need = ally_hp / std::max(enemy_dps, 1.f);
-    const bool losing = we_need > they_need * 1.3f;
+    // Under pressure we stop taking even fights: those are the ones we kept losing.
+    const bool losing = we_need > they_need * (pressured() ? 1.0f : 1.3f);
+
+    std::vector<std::pair<vec2, int>> threats;
+    for (const auto& e : enemies_) {
+        if (!kBurstModel) threats.push_back({e.pos, e.range + 1});
+        else if (!harmless_on_spawn(e)) threats.push_back({e.pos, e.reach + 1});
+    }
+    if (nearest_d > 7) {
+        // A group coming our way that we cannot fight: leave before it arrives rather than
+        // finishing a camp and getting caught.
+        if (!losing || on_spawn()) return false;
+        set_status(Task::other, kHome);
+        return step_away(me, threats);
+    }
 
     // Target: the enemy we can reach this turn that dies soonest; melee may step first.
     const int reach = ranged_ ? range_ : range_ + 1;
@@ -529,10 +744,10 @@ bool Bot::fight_enemies(bc::champion& me) {
         if (target) comms_.set_focus(enemy_id(*target));
     }
     const bool can_finish = target && target->hp <= strength_ * 1.05f;
-    const bool in_danger = hp_ < threat * 2.5f + max_hp_ * 0.1f;
+    // One-turn burst decides whether we survive the next round; averaged damage hid spell
+    // nukes and let enemies one-shot us.
+    const bool in_danger = hp_ < threat * 2.5f + max_hp_ * 0.1f || (kBurstModel && burst >= hp_ * 0.7f);
 
-    std::vector<std::pair<vec2, int>> threats;
-    for (const auto& e : enemies_) threats.push_back({e.pos, e.range + 1});
     auto strike = [&](const SeenChamp& e) {
         bool acted = false;
         if (cheb(e.pos, pos_) > range_) acted = approach_unit(me, e.pos, range_);
@@ -548,8 +763,9 @@ bool Bot::fight_enemies(bc::champion& me) {
     int beside = 0;
     for (const auto& a : allies_seen_)
         if (cheb(a.pos, pos_) <= 3) ++beside;
-    const bool committed = beside >= 2 && !losing && hp_ > max_hp_ * 0.2f;
-    const bool retreating = (in_danger || (losing && nearest_d <= nearest->range + 2)) && !can_finish && !committed;
+    const bool committed = beside >= 2 && !losing && hp_ > max_hp_ * 0.2f && (!kBurstModel || burst < hp_);
+    const int danger_range = kBurstModel ? nearest->reach + 1 : nearest->range + 2;
+    const bool retreating = (in_danger || (losing && nearest_d <= danger_range)) && !can_finish && !committed;
     // Spells reach further than basic attacks (range 4): fire them at the team's focus
     // enemy, or the weakest in range, before deciding where to walk.
     fire_spells(retreating);
@@ -1237,7 +1453,8 @@ int Bot::best_altar(int& distance) {
 
 bool Bot::go_home(bc::champion& me, bool urgent) {
     if (on_spawn()) return false;
-    const bool hurt = hp_ < max_hp_ * 0.4f;
+    // A wounded champion alone is the one a hunting team picks off.
+    const bool hurt = hp_ < max_hp_ * (pressured() ? 0.55f : 0.4f);
     // A trip home to shop only makes sense while the build still has something to buy;
     // otherwise a full purse sends us home every turn. Tavi shops wherever it stands.
     const bool can_spend = build_step_ < build_for(type_).size() && type_ != bc::champion_type::tavi;
@@ -1313,8 +1530,9 @@ bool Bot::tribute(bc::champion& me) {
     const bool endgame = remaining <= d + channel + 20;
     // Close to the finish every carried gem counts: teammates' bags together may win.
     const bool wins = bc::global_submitted_gems(team::ally) + gems_ + 150 >= bc::constants::winning_gems;
-    const bool threatened = !enemies_.empty();
-    const bool want = gems_ >= kCarryGems || endgame || wins || d <= 6 || (threatened && gems_ >= 10) ||
+    // With small bags, enemies seen in the last few rounds count too: they are still about.
+    const bool threatened = kSmallBags ? enemy_recent(kRecentEnemy) : !enemies_.empty();
+    const bool want = gems_ >= carry_gems() || endgame || wins || d <= 6 || (threatened && gems_ >= kSmallBag) ||
                       task_ == Task::other;
     if (!want) return false;
     task_ = Task::other;
@@ -1376,7 +1594,10 @@ bool Bot::capture(bc::champion& me) {
             if (g.state != GroupState::reward || g.seen_round != round_) continue;
             const int d = cheb(g.anchor, pos_);
             if (d > 10 || d >= best_d || g.id > kMaxTarget || round_ < avoid_until_[g.id & 63]) continue;
-            if (comms_.claimed_by_other(slot_, Task::capture, g.id, slots_)) continue;
+            // Rewards are split among allies standing on the region: with small bags, big gem
+            // rewards are shared so no single champion walks off with a bag worth dying for.
+            const int sharers = !kSmallBags ? 1 : g.gems >= 100 ? 5 : g.gems >= 40 ? 3 : 1;
+            if (comms_.claims_by_others(slot_, Task::capture, g.id, slots_) >= sharers) continue;
             best = g.id;
             best_d = d;
         }
@@ -1472,6 +1693,7 @@ bool Bot::enemy_side(Group& g) {
         const int theirs = W.dist(W.enemy_spawn_poi, g.anchor, 30000);
         if (mine == kUnreached || theirs == kUnreached) return false;  // try again later
         g.side = theirs < mine ? 1 : 0;
+        g.contested = std::abs(theirs - mine) <= std::max(6, (mine + theirs) / 10);
     }
     return g.side == 1;
 }
@@ -1563,7 +1785,8 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude) {
         float score = (g.value(kGoldWeight) + (unlocks ? 1000.f : 0.f)) /
                       (group_rounds(g, team_dps, d) + extra + heal_rounds(g, team_dps, team_hp));
         // Contested ground near the enemy spawn is riskier.
-        if (enemy_side(g)) score *= 0.7f;
+        if (enemy_side(g)) score *= enemy_side_factor(false);
+        score *= target_danger(g);
         if (score > best_score) {
             best_score = score;
             best = g.id;
@@ -1580,7 +1803,8 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude) {
         const int d = dist_to_group(g);
         if (d == kUnreached || !g.alive_by(round_ + d + 5)) continue;
         float score = g.value(kGoldWeight) / group_rounds(g, team_dps, d);
-        if (enemy_side(g)) score *= 0.7f;
+        if (enemy_side(g)) score *= enemy_side_factor(false);
+        score *= target_danger(g);
         if (score > best_score) {
             best_score = score;
             best = g.id;
@@ -1629,7 +1853,11 @@ void Bot::choose_task(bc::champion& me) {
                            siege_rounds(g, living_dps, living_hp * 1.25f, unlocks) < 0;
         // We could not reach it lately (farm() set the avoid timer): pick another.
         const bool blocked_for_me = round_ < avoid_until_[squad & 63];
-        if (stale || stalled || blocked_for_me) squad = -1;
+        // We died beside it lately: teammates cannot know, so move the whole squad on rather
+        // than walk back there one at a time.
+        const bool deadly = kDangerMemory && !g.awake && !unlocks && danger_factor(g.anchor) < 0.35f;
+        if (deadly) avoid_until_[squad & 63] = round_ + 60;
+        if (stale || stalled || blocked_for_me || deadly) squad = -1;
     }
     if (squad < 0 && bc::fuel_remaining() > 30000) {
         float dps = team_dps, hp = team_hp;
@@ -1660,7 +1888,8 @@ void Bot::choose_task(bc::champion& me) {
         if (d == kUnreached || d > (squad < 0 ? 60 : 20)) continue;
         if (!g.alive_by(round_ + d + 5)) continue;
         float score = g.value(kGoldWeight) / (group_rounds(g, my_dps, d) + heal_rounds(g, my_dps, hp_));
-        if (enemy_side(g)) score *= 0.6f;
+        if (enemy_side(g)) score *= enemy_side_factor(true);
+        score *= target_danger(g);
         if (score > solo_score) {
             solo_score = score;
             solo = g.id;

@@ -26,6 +26,15 @@ struct SeenChamp {
     float dps;
     int range;
     int gems;
+    float burst = 0;  // damage it can deal in one turn: basic attack(s) plus its biggest spell
+    int reach = 1;    // tiles from which that burst can land next turn (walks, spells, dashes)
+};
+
+// Where enemy champions were seen together, so targets near them can be avoided for a while.
+struct Sighting {
+    vec2 pos{-100, -100};
+    int round = -1000;
+    int count = 0;
 };
 
 struct Spell {
@@ -118,6 +127,18 @@ private:
     float heal_rounds(const Group& g, float dps, float hp);
     float siege_rounds(const Group& g, float team_dps, float team_hp, bool unlocks);
     void set_status(Task task, int target);
+
+    // Reading the danger: enemy sightings, our own last death, and team deaths.
+    void note_sightings();
+    float danger_factor(vec2 p) const;
+    float target_danger(Group& g);
+    bool enemy_recent(int rounds) const { return round_ - last_enemy_round_ <= rounds; }
+    int recent_team_deaths(int window) const;
+    bool pressured() const;
+    bool enemy_passive() const;
+    int carry_gems() const;
+    float enemy_side_factor(bool solo) const;
+    bool wait_for_escort();
     bool on_spawn() const { return world().ally_spawn.get(pos_); }
 
     // Match constants.
@@ -154,6 +175,7 @@ private:
     std::vector<SeenChamp> allies_seen_;
     struct CachedDps {
         float dps = 0;
+        float burst = 0;
         int round = -1;
     };
     std::array<CachedDps, 32> dps_cache_{};
@@ -196,4 +218,22 @@ private:
     int yield_slot_ = -1;          // ally we are making way for in a corridor
     int yield_until_ = -1;
     std::array<int, 32> altar_avoid_until_{};  // altars we could not walk to lately
+
+    // Danger memory: recent enemy sightings and where this champion last died.
+    std::array<Sighting, 8> sightings_{};
+    int sighting_next_ = 0;
+    int last_enemy_round_ = -1000;
+    vec2 death_pos_{-100, -100};
+    int death_round_ = -1000;
+    bool was_alive_ = true;
+    int respawn_round_ = -1000;  // first living round after our last death
+
+    // Team deaths seen through the slot statuses.
+    std::array<bool, kMaxSlots> slot_dead_{};
+    std::array<int, 16> team_deaths_ = [] {
+        std::array<int, 16> a{};
+        a.fill(-100000);
+        return a;
+    }();
+    int team_death_next_ = 0;
 };
