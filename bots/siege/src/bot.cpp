@@ -58,12 +58,15 @@ struct BuildStep {
 };
 
 // Five shards of one kind combine into its emblem; the last step repeats forever.
+// The repeat step is Bruiser: 5 shards of the chosen stat plus 1 of each other, 7 shards'
+// worth for 150 gold where Power gives 6. Emblem passives do not stack, so once the useful
+// passives are bought, raw stats are all that is left to buy.
 const std::vector<BuildStep>& build_for(bc::champion_type t) {
     using it = bc::item_type;
     static const std::vector<BuildStep> tank{{it::jungle_shard_of_health, 5},
                                              {it::monster_shard_of_strength, 5},
                                              {it::durability_shard_of_health, 5},
-                                             {it::power_shard_of_strength, 1 << 30}};
+                                             {it::bruiser_shard_of_strength, 1 << 30}};
     // Treasure first for the ranged champions who collect most rewards: 20% more of
     // their gold compounds into every later shard. Melee carries go straight to damage.
     // Jungle (30% less damage from camps) comes before Durability: camps deal most of the
@@ -72,14 +75,14 @@ const std::vector<BuildStep>& build_for(bc::champion_type t) {
                                                {it::monster_shard_of_strength, 5},
                                                {it::jungle_shard_of_health, 5},
                                                {it::durability_shard_of_health, 5},
-                                               {it::power_shard_of_strength, 1 << 30}};
+                                               {it::bruiser_shard_of_strength, 1 << 30}};
     static const std::vector<BuildStep> fighter{{it::monster_shard_of_strength, 5},
                                                 {it::jungle_shard_of_health, 5},
                                                 {it::durability_shard_of_health, 5},
-                                                {it::power_shard_of_strength, 1 << 30}};
+                                                {it::bruiser_shard_of_strength, 1 << 30}};
     // Spell damage scales with Focus and lands instantly at range 4: stacked Focus
     // turns a caster's spell into a one-shot, which wins champion fights.
-    static const std::vector<BuildStep> caster{{it::durability_shard_of_health, 5}, {it::power_shard_of_focus, 1 << 30}};
+    static const std::vector<BuildStep> caster{{it::durability_shard_of_health, 5}, {it::bruiser_shard_of_focus, 1 << 30}};
     if (t == bc::champion_type::marcella) return caster;
     if (tank_type(t)) return tank;
     return bc::champion{t}.base_stats().base_attack_range > 1 ? earner : fighter;
