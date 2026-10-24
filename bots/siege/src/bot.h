@@ -77,7 +77,7 @@ private:
     void local_power(float& dps, float& hp) const;
     Forecast forecast(const Group& g, float dps) const;
     float group_rounds(const Group& g, float dps, int travel) const;
-    int dist_to_group(const Group& g);
+    int dist_to_group(Group& g);
     bool enemy_side(Group& g);
     std::uint16_t dist_from_me(vec2 p);
     bool engage_ready(const Group& g);

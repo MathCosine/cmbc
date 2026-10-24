@@ -212,8 +212,14 @@ void Bot::observe(bc::champion& me) {
     enemies_.clear();
     for (const auto& c : bc::vision::champions(team::enemy)) enemies_.push_back(seen(c));
     allies_seen_.clear();
-    for (const auto& c : bc::vision::champions(team::ally))
-        if (!(c == me)) allies_seen_.push_back(seen(c));
+    for (const auto& c : bc::vision::champions(team::ally)) {
+        if (c == me) continue;
+        allies_seen_.push_back(seen(c));
+        // Health shards only add: keep the most a teammate has shown, so the team's
+        // forecasts count its items while it is out of sight.
+        for (int i = 0; i < slots_; ++i)
+            if (allies_[i] == c) ally_hp_[i] = std::max(ally_hp_[i], allies_seen_.back().max_hp);
+    }
     mark("obs-groups");
     update_groups();
 }
@@ -1370,11 +1376,19 @@ std::uint16_t Bot::dist_from_me(vec2 p) {
     return me_field_->get(p);
 }
 
-int Bot::dist_to_group(const Group& g) {
+int Bot::dist_to_group(Group& g) {
     auto& W = world();
     auto& cached = group_dist_[g.id & 63];
     if (cached.round == round_ && cached.pos == pos_) return cached.dist;
-    const int d = W.has_field(g.poi) ? W.dist(g.poi, pos_) : dist_from_me(g.anchor);
+    // The group's own field routes around every other camp. Without it (no fuel to build
+    // it yet) a terrain-only search can lead straight through camps that wall it off.
+    const bool exact = W.field(g.poi, kPlanFuel) != nullptr;
+    const int d = exact ? W.dist(g.poi, pos_) : dist_from_me(g.anchor);
+    // Terrain and camp tiles never move, so a group walled off from here stays that way.
+    if (exact && d == kUnreached && W.group_id_at(pos_) < 0) {
+        if (!g.unreachable) LOG("UNREACH r" << round_ << " " << bc::to_string(type_) << bc::to_string(pos_) << " g" << g.id << bc::to_string(g.anchor));
+        g.unreachable = true;
+    }
     cached = {d, round_, pos_};
     return d;
 }
@@ -1530,14 +1544,16 @@ void Bot::choose_task(bc::champion& me) {
     // A squad that could not assemble enough strength here should not come straight back.
     if (stalled) avoid_until_[squad & 63] = round_ + 80;
     if (squad >= 0) {
-        const auto& g = W.groups[squad];
-        // Only drop the target when it is gone or too strong for the whole living team:
+        auto& g = W.groups[squad];
+        // Only drop the target when it is gone, walled off from us (a teammate chose it
+        // before it could tell) or too strong for the whole living team:
         // teammates popping home to shop must not send the squad across the map.
         float living_dps = 0, living_hp = 0;
         int living = 0;
         team_power(living_dps, living_hp, living, true);
         const bool unlocks = blocks_altar(g) && !any_altar_open();
-        const bool stale = g.state == GroupState::reward ||
+        const bool walled = dist_to_group(g) == kUnreached && g.unreachable;
+        const bool stale = walled || g.state == GroupState::reward ||
                            (g.state == GroupState::respawning && g.respawn_round > round_ + 25) ||
                            siege_rounds(g, living_dps, living_hp * 1.25f, unlocks) < 0;
         if (stale || stalled) squad = -1;
@@ -1584,7 +1600,7 @@ void Bot::choose_task(bc::champion& me) {
     }
     float squad_share = 0;
     if (squad >= 0) {
-        const auto& g = W.groups[squad];
+        auto& g = W.groups[squad];
         const int d = dist_to_group(g);
         if (d != kUnreached)
             squad_share = g.value(kGoldWeight) / std::max(active, 1) / (group_rounds(g, team_dps, d) + heal_rounds(g, team_dps, team_hp));
