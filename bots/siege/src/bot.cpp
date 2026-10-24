@@ -343,6 +343,7 @@ void Bot::play_turn() {
     mark("observe");
     observe(me);
     damage_taken_ = last_hp_round_ == round_ - 1 ? std::max(0.f, last_hp_ - hp_) : 0.f;
+    if (damage_taken_ > 0) last_hurt_round_ = round_;
     last_hp_ = hp_;
     last_hp_round_ = round_;
 
@@ -549,12 +550,32 @@ bool Bot::fight_enemies(bc::champion& me) {
     // Spells reach further than basic attacks (range 4): fire them at the team's focus
     // enemy, or the weakest in range, before deciding where to walk.
     fire_spells(retreating);
+    if (retreating && on_spawn()) {
+        // Already home, where enemies cannot step and we heal every turn: shoot whatever
+        // is in range, stay while healing, and otherwise get on with the game instead of
+        // standing here for hundreds of rounds.
+        use_combat_spells(me, nullptr, target);
+        bool hit = false;
+        if (target && cheb(target->pos, pos_) <= range_) hit = attack_target(me, target->handle, target->pos, target->hp);
+        if (hit || hp_ < max_hp_ * 0.9f) {
+            set_status(Task::other, kHome);
+            return true;
+        }
+        return false;
+    }
     if (retreating) {
         // Shoot first if we cannot get away anyway, then run toward home.
         use_combat_spells(me, nullptr, target);
         set_status(Task::other, kHome);
-        if (!step_away(me, threats) && target && cheb(target->pos, pos_) <= range_) attack_target(me, target->handle, target->pos, target->hp);
-        return true;
+        if (step_away(me, threats)) return true;
+        if (target && cheb(target->pos, pos_) <= range_) {
+            attack_target(me, target->handle, target->pos, target->hp);
+            return true;
+        }
+        // No tile is safer and nothing is in range. If nothing has hurt us for a while,
+        // the threat is across a wall or a hole: get on with the game rather than stare
+        // at it (one champion stood like this for 200+ rounds).
+        return round_ - last_hurt_round_ <= 8;
     }
     if (target && strike(*target)) return true;
     // Even or better: close in on the weakest enemy nearby rather than get kited.
@@ -1020,9 +1041,35 @@ bool Bot::try_dash_along(bc::champion& me, const bc::distance_field& field, bool
     return false;
 }
 
+bool Bot::make_way(bc::champion& me, vec2 blocked) {
+    // An ally holds the only tile that brings us closer. In a one-tile corridor two
+    // champions walking opposite ways used to wait for each other for the rest of the
+    // game. The lower slot goes first and the other steps aside; if the stand-off
+    // drags on, either one steps aside.
+    const SeenChamp* blocker = nullptr;
+    for (const auto& a : allies_seen_)
+        if (a.pos == blocked) blocker = &a;
+    if (!blocker) return false;
+    int their_slot = -1;
+    for (std::size_t i = 0; i < allies_.size(); ++i)
+        if (allies_[i] == blocker->handle) their_slot = static_cast<int>(i);
+    if (their_slot > slot_ && stuck_rounds_ < 6) return false;
+    yield_slot_ = their_slot;
+    yield_until_ = round_ + 3;
+    return step_away(me, {{blocker->pos, 3}});
+}
+
 bool Bot::travel(bc::champion& me, int poi) {
     if (!can_move_ || moved_) return false;
     auto& W = world();
+    if (round_ <= yield_until_ && yield_slot_ >= 0 && yield_slot_ < static_cast<int>(allies_.size())) {
+        // Still making way: keep clear of that ally until it has passed.
+        for (const auto& a : allies_seen_)
+            if (a.handle == allies_[yield_slot_] && cheb(a.pos, pos_) <= 1) {
+                yield_until_ = std::max(yield_until_, round_ + 1);
+                if (step_away(me, {{a.pos, 3}})) return true;
+            }
+    }
     const auto* f = W.field(poi, 15000);
     load_occupancy();
     const bool walkable = W.pois[poi].roots_walkable;
@@ -1064,6 +1111,7 @@ bool Bot::travel(bc::champion& me, int poi) {
     std::sort(options.begin(), options.begin() + count, [](const auto& a, const auto& b) { return a.first < b.first; });
     for (int i = 0; i < count; ++i)
         if (!occupied_.get(options[i].second) && try_move(me, options[i].second - pos_)) return true;
+    if (count > 0 && stuck_rounds_ >= 2 && make_way(me, options[0].second)) return true;
     // Every downhill tile is taken: route around the blockers.
     if (stuck_rounds_ >= 2 || count > 0) {
         bc::bitboard goal = W.pois[poi].roots();
@@ -1155,8 +1203,13 @@ int Bot::best_altar(int& distance) {
     auto& W = world();
     // Fields for the two closest altars as the crow flies keep the cost bounded.
     std::vector<std::pair<int, int>> order;
+    // Skip altars we recently failed to walk to, unless no other altar is open.
+    auto avoided = [&](int i) { return i < static_cast<int>(altar_avoid_until_.size()) && round_ < altar_avoid_until_[i]; };
     for (int i = 0; i < static_cast<int>(W.altars.size()); ++i)
-        if (altar_open(i)) order.push_back({cheb(W.altars[i], pos_), i});
+        if (altar_open(i) && !avoided(i)) order.push_back({cheb(W.altars[i], pos_), i});
+    if (order.empty())
+        for (int i = 0; i < static_cast<int>(W.altars.size()); ++i)
+            if (altar_open(i)) order.push_back({cheb(W.altars[i], pos_), i});
     std::sort(order.begin(), order.end());
     int best = -1;
     distance = kUnreached;
@@ -1182,7 +1235,10 @@ int Bot::best_altar(int& distance) {
 bool Bot::go_home(bc::champion& me, bool urgent) {
     if (on_spawn()) return false;
     const bool hurt = hp_ < max_hp_ * 0.4f;
-    const bool rich = gold_ >= 250 || (gold_ >= 150 && hp_ < max_hp_ * 0.6f);
+    // A trip home to shop only makes sense while the build still has something to buy;
+    // otherwise a full purse sends us home every turn. Tavi shops wherever it stands.
+    const bool can_spend = build_step_ < build_for(type_).size() && type_ != bc::champion_type::tavi;
+    const bool rich = can_spend && (gold_ >= 250 || (gold_ >= 150 && hp_ < max_hp_ * 0.6f));
     if (!urgent && !hurt && !rich) return false;
     // Bank gems first when an altar is close.
     if (gems_ > 0 && hp_ > max_hp_ * 0.2f) {
@@ -1274,20 +1330,23 @@ bool Bot::tribute(bc::champion& me) {
             target_ = -1;
             return true;
         } catch (const std::exception&) {
-            // Locked or blocked: attack the lock if one is visible.
-            if (bc::vision::has_altar_lock(altar)) {
-                const auto lock = bc::vision::altar_lock_at(altar);
-                if (lock.is_enemy() && can_attack_) {
-                    try {
-                        me.attack(lock);
-                    } catch (const std::exception&) {
+            // Locked: attack the enemy's lock. Both teams can lock the same altar, and
+            // altar_lock_at() then returns ours, so look for theirs explicitly.
+            if (can_attack_)
+                for (const auto& lock : bc::vision::altar_locks(team::enemy))
+                    if (lock.position() == altar) {
+                        try {
+                            me.attack(lock);
+                        } catch (const std::exception&) {
+                        }
+                        break;
                     }
-                }
-            }
             return true;
         }
     }
     travel(me, world().altar_poi[a]);
+    // Walking to this altar has stalled for a long time: try another one for a while.
+    if (stuck_rounds_ >= 12 && a < static_cast<int>(altar_avoid_until_.size())) altar_avoid_until_[a] = round_ + 60;
     return true;
 }
 
@@ -1295,9 +1354,16 @@ bool Bot::capture(bc::champion& me) {
     auto& W = world();
     if (task_ == Task::capture && target_ >= 0) {
         const auto& g = W.groups[target_];
-        if (g.state != GroupState::reward) {
+        // Drop the claim once the reward is gone, or when something pulled us far away or
+        // the tiles cannot be reached: champions used to stand still "capturing" a reward
+        // across the map for hundreds of rounds.
+        if (g.state != GroupState::reward || cheb(g.anchor, pos_) > 14 || capture_fail_ >= 6) {
+            // Tiles we could not walk to (an island only a dash reaches, say): stop
+            // re-claiming them every few turns.
+            if (capture_fail_ >= 6) avoid_until_[target_ & 63] = round_ + 150;
             task_ = Task::farm;
             target_ = -1;
+            capture_fail_ = 0;
         }
     }
     if (task_ != Task::capture) {
@@ -1306,7 +1372,7 @@ bool Bot::capture(bc::champion& me) {
         for (const auto& g : W.groups) {
             if (g.state != GroupState::reward || g.seen_round != round_) continue;
             const int d = cheb(g.anchor, pos_);
-            if (d > 10 || d >= best_d || g.id > kMaxTarget) continue;
+            if (d > 10 || d >= best_d || g.id > kMaxTarget || round_ < avoid_until_[g.id & 63]) continue;
             if (comms_.claimed_by_other(slot_, Task::capture, g.id, slots_)) continue;
             best = g.id;
             best_d = d;
@@ -1315,6 +1381,7 @@ bool Bot::capture(bc::champion& me) {
         task_ = Task::capture;
         target_ = best;
         wait_rounds_ = 0;
+        capture_fail_ = 0;
     }
     set_status(Task::capture, target_);
     const auto& g = W.groups[target_];
@@ -1329,7 +1396,8 @@ bool Bot::capture(bc::champion& me) {
     for (auto t : g.tiles)
         if (!occupied_.get(t)) goal.set(t);
     if (goal.is_empty()) return true;
-    approach(me, goal);
+    if (approach(me, goal)) capture_fail_ = 0;
+    else ++capture_fail_;
     return true;
 }
 
@@ -1556,7 +1624,9 @@ void Bot::choose_task(bc::champion& me) {
         const bool stale = walled || g.state == GroupState::reward ||
                            (g.state == GroupState::respawning && g.respawn_round > round_ + 25) ||
                            siege_rounds(g, living_dps, living_hp * 1.25f, unlocks) < 0;
-        if (stale || stalled) squad = -1;
+        // We could not reach it lately (farm() set the avoid timer): pick another.
+        const bool blocked_for_me = round_ < avoid_until_[squad & 63];
+        if (stale || stalled || blocked_for_me) squad = -1;
     }
     if (squad < 0 && bc::fuel_remaining() > 30000) {
         float dps = team_dps, hp = team_hp;
@@ -1577,6 +1647,7 @@ void Bot::choose_task(bc::champion& me) {
     for (auto& g : W.groups) {
         if (!may_solo) break;
         if (!g.harmless || g.unreachable || g.id > kMaxTarget || g.state == GroupState::reward) continue;
+        if (round_ < avoid_until_[g.id & 63]) continue;
         if (comms_.claimed_by_other(slot_, Task::solo, g.id, slots_) ||
             comms_.claimed_by_other(slot_, Task::capture, g.id, slots_))
             continue;
@@ -1629,6 +1700,9 @@ bool Bot::farm(bc::champion& me) {
         // Follow the squad when someone moved it.
         if (task_ == Task::farm && target_ != comms_.squad_target()) replan = true;
         if (wait_rounds_ > 20 && !g.awake) replan = true;
+        // A solo target we have waited at this long without a fight is not working out
+        // (unseen camps, an unreachable tile): try something else for a while.
+        if (task_ == Task::solo && wait_rounds_ > 25 && !g.awake) avoid_until_[target_ & 63] = round_ + 60;
     }
     if (replan && bc::fuel_remaining() > 25000) choose_task(me);
     if (target_ < 0 || task_ == Task::other || task_ == Task::capture) return false;
@@ -1649,15 +1723,21 @@ bool Bot::farm(bc::champion& me) {
             if (c.group == target_) any_camp = true;
         bool tiles_seen = false;
         for (auto t : g.tiles) tiles_seen |= visible_.get(t);
-        if (!any_camp && g.state == GroupState::alive && tiles_seen) {
+        // Camps we still believe alive but cannot see (behind a wall or in a bush).
+        bool hidden = false;
+        for (const auto& c : g.camps) hidden |= c.alive_known && !visible_.get(c.pos);
+        if (!any_camp && g.state == GroupState::alive && tiles_seen && !hidden) {
             // Everything here is dead but the reward is not visible yet; replan next turn.
             plan_round_ = -1000;
         }
-        if (!any_camp && !tiles_seen) {
-            // Bushes hide the camps: walk right up to them so we can see (and hit) them.
+        if (!any_camp && (hidden || !tiles_seen)) {
+            // Walk right up to the camps we cannot see so we can see (and hit) them. Waiting
+            // for them to show up locked a champion in place for a whole game once: one tile
+            // of its cluster was in view and dead, the other hidden behind a wall.
             bc::bitboard ring;
             ring.clear();
-            for (auto t : g.tiles) ring.draw_chebyshev(t, 1);
+            for (const auto& c : g.camps)
+                if (!tiles_seen || (c.alive_known && !visible_.get(c.pos))) ring.draw_chebyshev(c.pos, 1);
             approach(me, ring);
         } else if (hazardous(pos_, target_) && can_move_) {
             // Wait out of reach of the neighbouring groups; enemies may wake them.
@@ -1695,6 +1775,12 @@ bool Bot::farm(bc::champion& me) {
         }
         return true;
     }
+    // A target we have been unable to walk towards for a long time is out of reach for
+    // now (walled in by other camps, say): give it up for a while.
+    if (stuck_rounds_ >= 30 && !g.awake) {
+        avoid_until_[target_ & 63] = round_ + 100;
+        plan_round_ = -1000;
+    }
     mark("farm-travel");
     travel(me, g.poi);
     return true;
@@ -1722,11 +1808,20 @@ void Bot::shop(bc::champion& me, bool consumables) {
         if (n <= 0) break;
         try {
             me.buy(step.item, static_cast<std::uint32_t>(n));
-        } catch (const std::exception&) {
-            // Stat overflow or a shop rule: move on to the next step.
+        } catch (const bc::error& err) {
+            // Only skip a step the shop will never sell us. A stun, a channel or being off
+            // spawn passes: one stun used to burn through Tavi's whole build (Tavi shops in
+            // the field every turn), and it never bought anything again that game.
+            using ec = bc::error_code;
+            const auto code = err.code();
+            if (code != ec::invalid_action_buy_item_invalid_item && code != ec::invalid_action_buy_item_inventory_full &&
+                code != ec::invalid_action_buy_item_stats_overflow)
+                break;
             ++build_step_;
             build_bought_ = 0;
             continue;
+        } catch (const std::exception&) {
+            break;
         }
         gold_ -= n * cost;
         build_bought_ += n;

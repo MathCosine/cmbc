@@ -104,6 +104,7 @@ private:
     bool step_away(bc::champion& me, const std::vector<std::pair<vec2, int>>& threats);
     bool try_move(bc::champion& me, vec2 delta);
     bool try_dash_along(bc::champion& me, const bc::distance_field& field, bool walkable_roots);
+    bool make_way(bc::champion& me, vec2 blocked);
     bool free_tile(vec2 p) const;
 
     // Helpers.
@@ -190,4 +191,9 @@ private:
     };
     std::array<CachedDist, 64> group_dist_{};
     vec2 last_pos_{-1, -1};
+    int last_hurt_round_ = -1000;  // last round we lost health
+    int capture_fail_ = 0;         // turns in a row we could not step toward our capture
+    int yield_slot_ = -1;          // ally we are making way for in a corridor
+    int yield_until_ = -1;
+    std::array<int, 32> altar_avoid_until_{};  // altars we could not walk to lately
 };
