@@ -83,6 +83,24 @@ constexpr int kBigBag = 50;
 constexpr bool kBurstModel = false;
 // Camps nearer the enemy spawn: score x0.35 solo and x0.45 for the squad (0.6 and 0.7 before).
 constexpr bool kShunEnemySide = false;
+// Stand and fight. Ladder games showed our champions landing a hit in under half of their
+// fight rounds (ladder teams: 55-79%): with an enemy within 7 tiles they kept farming 43% of
+// the time, stepped away 21% (median health 58%) and chased 16%, and a ranged champion that
+// moves cannot attack. With this on: count allies as far out as enemies (8 tiles), retreat only
+// when in danger or clearly losing, fight back instead of fleeing an adjacent melee champion,
+// engage enemies within 5 tiles, and let ranged enemies step into our range rather than step
+// into theirs (unless a teammate is on them or they are nearly dead).
+// On the ladder (14 games) this doubled our kills per game (3.1 to 6.4), evened champion
+// damage (17k-35k a game before, 26.5k-28k after) and turned fights where we outnumbered
+// the enemy from 19-62 into 27-18. Locally it looked worse: the sparring bots share our
+// fight code, so they cannot show what a better fighter gains against the ladder.
+constexpr bool kStandAndFight = true;
+// Outnumbered fights were still 7 won, 71 lost (97 of our deaths against 20): with more
+// enemies than allies within kCrowdRange, do not engage, and leave once they come close.
+constexpr bool kAvoidOutnumbered = true;
+constexpr int kCrowdRange = 6;
+constexpr int kEngageRange = 5;
+constexpr int kMaxHold = 6;  // turns a ranged champion waits for an enemy before moving on
 
 bool tank_type(bc::champion_type t) { return t == bc::champion_type::ryth || t == bc::champion_type::marcella; }
 
@@ -681,11 +699,16 @@ bool Bot::harmless_on_spawn(const SeenChamp& e) const {
 }
 
 bool Bot::fight_enemies(bc::champion& me) {
-    if (enemies_.empty()) return false;
+    if (enemies_.empty()) {
+        hold_turns_ = 0;
+        return false;
+    }
     const float my_dps = dps_of(type_, strength_, focus_);
     float ally_dps = my_dps, ally_hp = hp_;
+    // Count allies as far out as enemies: a shorter ally range made even fights look lost.
+    const int ally_range = kStandAndFight ? 8 : 6;
     for (const auto& a : allies_seen_)
-        if (cheb(a.pos, pos_) <= 6) {
+        if (cheb(a.pos, pos_) <= ally_range) {
             ally_dps += a.dps;
             ally_hp += a.hp;
         }
@@ -710,12 +733,19 @@ bool Bot::fight_enemies(bc::champion& me) {
         }
     }
     if (!nearest || nearest_d > (kBurstModel ? 10 : 7)) return false;
+    int their_heads = 0, our_heads = 1;
+    for (const auto& e : enemies_)
+        if (!harmless_on_spawn(e) && cheb(e.pos, pos_) <= kCrowdRange) ++their_heads;
+    for (const auto& a : allies_seen_)
+        if (cheb(a.pos, pos_) <= kCrowdRange) ++our_heads;
+    const bool outnumbered = kStandAndFight && kAvoidOutnumbered && their_heads > our_heads;
 
     // Rounds for each side to wipe the other if everyone nearby commits.
     const float we_need = enemy_hp / std::max(ally_dps, 1.f);
     const float they_need = ally_hp / std::max(enemy_dps, 1.f);
     // Under pressure we stop taking even fights: those are the ones we kept losing.
     const bool losing = we_need > they_need * (pressured() ? 1.0f : 1.3f);
+    const bool clearly_losing = we_need > they_need * (pressured() ? 1.3f : 1.6f) || outnumbered;
 
     std::vector<std::pair<vec2, int>> threats;
     for (const auto& e : enemies_) {
@@ -763,9 +793,19 @@ bool Bot::fight_enemies(bc::champion& me) {
     int beside = 0;
     for (const auto& a : allies_seen_)
         if (cheb(a.pos, pos_) <= 3) ++beside;
-    const bool committed = beside >= 2 && !losing && hp_ > max_hp_ * 0.2f && (!kBurstModel || burst < hp_);
     const int danger_range = kBurstModel ? nearest->reach + 1 : nearest->range + 2;
-    const bool retreating = (in_danger || (losing && nearest_d <= danger_range)) && !can_finish && !committed;
+    bool committed, retreating;
+    if (kStandAndFight) {
+        // One teammate beside us is enough to hold a fight that is not clearly lost.
+        committed = beside >= 1 && !clearly_losing && hp_ > max_hp_ * 0.25f && (!kBurstModel || burst < hp_);
+        retreating = (in_danger || (clearly_losing && nearest_d <= danger_range)) && !can_finish && !committed;
+        // A melee champion beside us walks and hits every turn: running only gives it free
+        // hits, so hit back instead.
+        if (retreating && !on_spawn() && nearest->range <= 1 && nearest_d <= 2 && target && cheb(target->pos, pos_) <= range_) retreating = false;
+    } else {
+        committed = beside >= 2 && !losing && hp_ > max_hp_ * 0.2f && (!kBurstModel || burst < hp_);
+        retreating = (in_danger || (losing && nearest_d <= danger_range)) && !can_finish && !committed;
+    }
     // Spells reach further than basic attacks (range 4): fire them at the team's focus
     // enemy, or the weakest in range, before deciding where to walk.
     fire_spells(retreating);
@@ -796,9 +836,36 @@ bool Bot::fight_enemies(bc::champion& me) {
         // at it (one champion stood like this for 200+ rounds).
         return round_ - last_hurt_round_ <= 8;
     }
-    if (target && strike(*target)) return true;
+    if (target && strike(*target)) {
+        hold_turns_ = 0;
+        return true;
+    }
+    if (kStandAndFight && !losing && !outnumbered) {
+        // Engage rather than keep farming while an enemy walks up and picks the moment.
+        const SeenChamp* goal = nullptr;
+        for (const auto& e : enemies_) {
+            if (!huntable(e) || cheb(e.pos, pos_) > kEngageRange) continue;
+            const bool focused = slots_ <= 5 && enemy_id(e) == comms_.focus();
+            if (!goal || focused || (e.hp < goal->hp && !(slots_ <= 5 && enemy_id(*goal) == comms_.focus()))) goal = &e;
+        }
+        if (goal) {
+            bool busy = false;  // a teammate is already on it
+            for (const auto& a : allies_seen_)
+                if (cheb(a.pos, goal->pos) <= 2) busy = true;
+            const bool low = goal->hp <= strength_ * 2.f;
+            // A ranged champion that steps in cannot attack that turn, and a ranged enemy at the
+            // edge of its range shoots first: let it come to us instead.
+            if (ranged_ && !busy && !low && hold_turns_ < kMaxHold) {
+                ++hold_turns_;
+                mark("hold");
+                return true;
+            }
+            hold_turns_ = 0;
+            if (strike(*goal)) return true;
+        }
+    }
     // Even or better: close in on the weakest enemy nearby rather than get kited.
-    if (!losing) {
+    if (!kStandAndFight && !losing) {
         const SeenChamp* weakest = nullptr;
         for (const auto& e : enemies_)
             if (huntable(e) && cheb(e.pos, pos_) <= 4 && (!weakest || e.hp < weakest->hp)) weakest = &e;

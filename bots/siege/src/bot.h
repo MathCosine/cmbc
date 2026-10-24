@@ -236,4 +236,5 @@ private:
         return a;
     }();
     int team_death_next_ = 0;
+    int hold_turns_ = 0;  // turns spent waiting for an enemy to step into our range
 };
