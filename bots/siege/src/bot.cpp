@@ -106,6 +106,18 @@ constexpr bool kCampAwareFights = true;
 // Rounds a squad waits at its target for teammates before giving it up for another. On maps
 // with long walks between targets (corridors) 20 rounds sent the squad back and forth.
 constexpr int kStallRounds = 60;
+// Safe opening. Games are decided early: our first death came at round 453 (median) in wins and
+// round 58 in losses. In small-map losses 60% of our deaths before round 250 were at contested
+// camps and 25% on the enemy side, while the teams beating us farmed their own half first.
+// Until kOpeningRounds, contested and enemy-side camps are taken only when nothing else is left.
+constexpr bool kSafeOpening = true;
+constexpr int kOpeningRounds = 250;
+// Scout wards. Ladder teams re-place their ward about every 12 rounds (a quarter of the time in a
+// bush) and land the first hit in more fights; ours sat at old capture spots (every 68 rounds,
+// 1% in bushes). Whenever the ward is ready and we have moved on, re-place it within 2 tiles,
+// in a bush if there is one, else toward the enemy.
+constexpr bool kScoutWards = true;
+constexpr int kScoutWardMove = 5;  // re-place once we are this far from our ward
 constexpr int kEngageRange = 5;
 constexpr int kMaxHold = 6;  // turns a ranged champion waits for an enemy before moving on
 
@@ -450,6 +462,11 @@ float Bot::danger_factor(vec2 p) const {
     return f;
 }
 
+bool Bot::risky_early(Group& g) {
+    if (!kSafeOpening || round_ >= kOpeningRounds) return false;
+    return enemy_side(g) || g.contested;  // enemy_side() also works out g.contested
+}
+
 float Bot::target_danger(Group& g) {
     // Our own half is where we have to farm: recent danger there only halves the score.
     const bool theirs = enemy_side(g);
@@ -623,6 +640,7 @@ void Bot::act(bc::champion& me) {
     if (at_spawn || type_ == bc::champion_type::tavi) shop(me, at_spawn);
     mark("locks");
     place_lock(me);
+    scout_ward(me);
 
     mark("enemies");
     if (fight_enemies(me)) return;
@@ -1472,9 +1490,47 @@ void Bot::drop_ward(bc::champion& me) {
             placed = me.place_ward(n);
         } catch (const std::exception&) {
         }
-        if (placed) ward_ready_round_ = round_ + bc::constants::ward_cooldown + 1;
-        else ward_ready_round_ = round_ + 3;
+        if (placed) {
+            ward_ready_round_ = round_ + bc::constants::ward_cooldown + 1;
+            ward_pos_ = n;
+        } else {
+            ward_ready_round_ = round_ + 3;
+        }
         return;
+    }
+}
+
+void Bot::scout_ward(bc::champion& me) {
+    if (!kScoutWards || round_ < ward_ready_round_ || on_spawn()) return;
+    if (cheb(ward_pos_, pos_) <= kScoutWardMove) return;  // our ward already watches this area
+    for (const auto& e : enemies_)
+        if (!harmless_on_spawn(e) && cheb(e.pos, pos_) <= 6) return;  // not in the middle of a fight
+    auto& W = world();
+    load_occupancy();
+    vec2 best{-1, -1};
+    int best_score = -1000;
+    for (int dy = -2; dy <= 2; ++dy)
+        for (int dx = -2; dx <= 2; ++dx) {
+            const vec2 n{pos_.x + dx, pos_.y + dy};
+            if (!free_tile(n) || W.ally_spawn.get(n)) continue;
+            // A bush hides whoever stands in it; otherwise look toward the enemy.
+            const int score = (W.bushes.get(n) ? 10 : 0) + cheb(pos_, W.enemy_centre) - cheb(n, W.enemy_centre);
+            if (score > best_score) {
+                best_score = score;
+                best = n;
+            }
+        }
+    if (best.x < 0) return;
+    bool placed = false;
+    try {
+        placed = me.place_ward(best);
+    } catch (const std::exception&) {
+    }
+    if (placed) {
+        ward_ready_round_ = round_ + bc::constants::ward_cooldown + 1;
+        ward_pos_ = best;
+    } else {
+        ward_ready_round_ = round_ + 3;
     }
 }
 
@@ -1842,7 +1898,7 @@ bool Bot::any_altar_open() const {
     return false;
 }
 
-int Bot::choose_squad_target(float team_dps, float team_hp, int exclude) {
+int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool allow_risky) {
     auto& W = world();
     team_dps *= kFightEfficiency;
     const bool altar_reachable = any_altar_open();
@@ -1857,6 +1913,8 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude) {
         // When every altar is walled in by camps, the camps doing it hold the game hostage.
         const bool unlocks = !altar_reachable && blocks_altar(g);
         if (d == kUnreached) continue;
+        // Camps walling in every altar stay a target: nothing can be banked until they fall.
+        if (!allow_risky && !unlocks && risky_early(g)) continue;
         const float extra = siege_rounds(g, team_dps, team_hp, unlocks);
         if (extra < 0) continue;
         if (!g.alive_by(round_ + d + 15)) continue;
@@ -1878,6 +1936,7 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude) {
         if (bc::fuel_remaining() < 20000) break;
         if (!g.harmless || g.unreachable || g.id > kMaxTarget || g.id == exclude || g.state == GroupState::reward) continue;
         if (comms_.claimed_by_other(slot_, Task::solo, g.id, slots_)) continue;
+        if (!allow_risky && risky_early(g)) continue;
         const int d = dist_to_group(g);
         if (d == kUnreached || !g.alive_by(round_ + d + 5)) continue;
         float score = g.value(kGoldWeight) / group_rounds(g, team_dps, d);
@@ -1941,6 +2000,7 @@ void Bot::choose_task(bc::champion& me) {
         float dps = team_dps, hp = team_hp;
         if (stalled) local_power(dps, hp);
         squad = choose_squad_target(dps, hp, stalled ? comms_.squad_target() : -1);
+        if (squad < 0 && kSafeOpening && round_ < kOpeningRounds) squad = choose_squad_target(dps, hp, stalled ? comms_.squad_target() : -1, true);
         if (squad >= 0 || !stalled) comms_.set_squad_target(squad);
         else squad = comms_.squad_target();
     }
@@ -1957,6 +2017,7 @@ void Bot::choose_task(bc::champion& me) {
         if (!may_solo) break;
         if (!g.harmless || g.unreachable || g.id > kMaxTarget || g.state == GroupState::reward) continue;
         if (round_ < avoid_until_[g.id & 63]) continue;
+        if (risky_early(g)) continue;
         if (comms_.claimed_by_other(slot_, Task::solo, g.id, slots_) ||
             comms_.claimed_by_other(slot_, Task::capture, g.id, slots_))
             continue;

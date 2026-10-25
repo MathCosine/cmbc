@@ -82,7 +82,9 @@ private:
 
     // Planning.
     void choose_task(bc::champion& me);
-    int choose_squad_target(float team_dps, float team_hp, int exclude);
+    int choose_squad_target(float team_dps, float team_hp, int exclude, bool allow_risky = false);
+    bool risky_early(Group& g);
+    void scout_ward(bc::champion& me);
     void local_power(float& dps, float& hp) const;
     Forecast forecast(const Group& g, float dps) const;
     float group_rounds(const Group& g, float dps, int travel) const;
@@ -237,4 +239,5 @@ private:
     }();
     int team_death_next_ = 0;
     int hold_turns_ = 0;  // turns spent waiting for an enemy to step into our range
+    vec2 ward_pos_{-100, -100};  // where our ward stands
 };

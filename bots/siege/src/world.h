@@ -79,6 +79,7 @@ public:
     BitGrid ally_spawn;
     BitGrid enemy_spawn;
     BitGrid altars_grid;
+    BitGrid bushes;       // block sight; good places for a ward
     bc::bitboard blocked_board;
     bc::bitboard camp_board;  // every camp spawn tile
     std::vector<Group> groups;

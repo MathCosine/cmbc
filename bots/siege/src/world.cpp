@@ -25,6 +25,7 @@ void World::init() {
     ally_spawn.load(bc::map::spawn_region(team::ally), w, h);
     enemy_spawn.load(enemy_region, w, h);
     altars_grid.load(bc::map::altars(), w, h);
+    bushes.load(bc::map::bushes(), w, h);
     altars = bc::map::altars().positions();
     spawn_tiles = bc::map::spawn_region(team::ally).positions();
     ally_centre = spawn_tiles.empty() ? vec2{} : spawn_tiles[spawn_tiles.size() / 2];
