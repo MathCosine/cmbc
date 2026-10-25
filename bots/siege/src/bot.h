@@ -141,6 +141,8 @@ private:
     int carry_gems() const;
     float enemy_side_factor(bool solo) const;
     bool wait_for_escort();
+    bool early_warning(bc::champion& me);
+    bool capturing_here() const;
     bool on_spawn() const { return world().ally_spawn.get(pos_); }
 
     // Match constants.

@@ -118,6 +118,17 @@ constexpr int kOpeningRounds = 250;
 // in a bush if there is one, else toward the enemy.
 constexpr bool kScoutWards = true;
 constexpr int kScoutWardMove = 5;  // re-place once we are this far from our ward
+// Early warning. Outnumbered fights became the biggest loss (76 of 169 deaths in 10 v6 games),
+// mostly one of ours caught by 2-3 enemies after round 300, while enemies 8-10 tiles out were
+// ignored. A group that outnumbers us at that range sends us toward a teammate, or away.
+// Off: about 20 fewer wins out of 560 against the sparring bots in both combinations tested.
+constexpr bool kEarlyWarning = false;
+// Capture guard. A capture needs the region held uncontested for 5 rounds and an enemy stepping
+// on it only resets the timer, but our capturer used to walk off to fight and the enemy took
+// the reward (30 rewards, 500 gems, in 10 v6 games). Hold the tile and fight from it unless in
+// danger or the fight is clearly lost (outnumbered, or out-damaged); holding even when
+// outnumbered by one cost deaths locally.
+constexpr bool kHoldCapture = true;
 constexpr int kEngageRange = 5;
 constexpr int kMaxHold = 6;  // turns a ranged champion waits for an enemy before moving on
 
@@ -504,6 +515,45 @@ float Bot::enemy_side_factor(bool solo) const {
     return solo ? 0.35f : 0.45f;
 }
 
+bool Bot::capturing_here() const {
+    if (task_ != Task::capture || target_ < 0) return false;
+    for (auto t : world().groups[target_].tiles)
+        if (t == pos_) return true;
+    return false;
+}
+
+bool Bot::early_warning(bc::champion& me) {
+    if (on_spawn() || capturing_here()) return false;
+    int coming = 0;
+    vec2 sum{0, 0};
+    for (const auto& e : enemies_)
+        if (!harmless_on_spawn(e) && cheb(e.pos, pos_) <= 10) {
+            ++coming;
+            sum += e.pos;
+        }
+    int with_us = 1;
+    for (const auto& a : allies_seen_)
+        if (cheb(a.pos, pos_) <= kCrowdRange) ++with_us;
+    if (coming <= with_us) return false;
+    // Join the nearest teammate we are not already beside, unless it is closer to them than we are.
+    const vec2 centre = sum / coming;
+    const SeenChamp* mate = nullptr;
+    int best = 1000;
+    for (const auto& a : allies_seen_) {
+        const int d = cheb(a.pos, pos_);
+        if (d > 3 && d < best && cheb(a.pos, centre) >= cheb(pos_, centre) - 1) {
+            best = d;
+            mate = &a;
+        }
+    }
+    mark("early-warning");
+    if (mate && approach_unit(me, mate->pos, 2)) return true;
+    std::vector<std::pair<vec2, int>> threats;
+    for (const auto& e : enemies_)
+        if (!harmless_on_spawn(e)) threats.push_back({e.pos, e.range + 4});
+    return step_away(me, threats);
+}
+
 bool Bot::wait_for_escort() {
     // A champion that respawns and walks back out alone into a team holding our half dies
     // again. Once teammates have been dying, leave spawn with someone.
@@ -762,7 +812,8 @@ bool Bot::fight_enemies(bc::champion& me) {
             nearest = &e;
         }
     }
-    if (!nearest || nearest_d > (kBurstModel ? 10 : 7)) return false;
+    if (!nearest) return false;
+    if (nearest_d > (kBurstModel ? 10 : 7)) return kEarlyWarning && nearest_d <= 10 && early_warning(me);
     int their_heads = 0, our_heads = 1;
     for (const auto& e : enemies_)
         if (!harmless_on_spawn(e) && cheb(e.pos, pos_) <= kCrowdRange) ++their_heads;
@@ -842,6 +893,14 @@ bool Bot::fight_enemies(bc::champion& me) {
     // Spells reach further than basic attacks (range 4): fire them at the team's focus
     // enemy, or the weakest in range, before deciding where to walk.
     fire_spells(retreating);
+    if (kHoldCapture && capturing_here() && !in_danger && !clearly_losing) {
+        // Hold the region: hit whatever is in range without stepping off it.
+        use_combat_spells(me, nullptr, target);
+        if (target && cheb(target->pos, pos_) <= range_) attack_target(me, target->handle, target->pos, target->hp);
+        set_status(Task::capture, target_);
+        mark("hold-capture");
+        return true;
+    }
     if (retreating && on_spawn()) {
         // Already home, where enemies cannot step and we heal every turn: shoot whatever
         // is in range, stay while healing, and otherwise get on with the game instead of
