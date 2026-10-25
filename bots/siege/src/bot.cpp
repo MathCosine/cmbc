@@ -462,9 +462,14 @@ float Bot::danger_factor(vec2 p) const {
     return f;
 }
 
-bool Bot::risky_early(Group& g) {
+bool Bot::opening_blocks(Group& g, bool allow_contested) {
+    // During the opening: contested camps only as a fallback, camps on the enemy side never.
+    // The first v5 games showed why: with our side farmed out, falling back to any camp sent
+    // the squad next to the enemy spawn (42% of early deaths there, against 19% before).
     if (!kSafeOpening || round_ >= kOpeningRounds) return false;
-    return enemy_side(g) || g.contested;  // enemy_side() also works out g.contested
+    const bool theirs = enemy_side(g);  // also works out g.contested
+    if (g.contested) return !allow_contested;
+    return theirs;
 }
 
 float Bot::target_danger(Group& g) {
@@ -1724,8 +1729,9 @@ bool Bot::capture(bc::champion& me) {
     if (task_ != Task::capture) {
         // Claim a waiting reward nearby that nobody else is collecting.
         int best = -1, best_d = 1000;
-        for (const auto& g : W.groups) {
+        for (auto& g : W.groups) {
             if (g.state != GroupState::reward || g.seen_round != round_) continue;
+            if (opening_blocks(g, true)) continue;
             const int d = cheb(g.anchor, pos_);
             if (d > 10 || d >= best_d || g.id > kMaxTarget || round_ < avoid_until_[g.id & 63]) continue;
             // Rewards are split among allies standing on the region: with small bags, big gem
@@ -1898,7 +1904,9 @@ bool Bot::any_altar_open() const {
     return false;
 }
 
-int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool allow_risky) {
+int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool allow_contested) {
+    // In the opening, our own camps are worth waiting a while for rather than walking off.
+    const int respawn_wait = kSafeOpening && round_ < kOpeningRounds && !allow_contested ? 60 : 15;
     auto& W = world();
     team_dps *= kFightEfficiency;
     const bool altar_reachable = any_altar_open();
@@ -1914,10 +1922,10 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
         const bool unlocks = !altar_reachable && blocks_altar(g);
         if (d == kUnreached) continue;
         // Camps walling in every altar stay a target: nothing can be banked until they fall.
-        if (!allow_risky && !unlocks && risky_early(g)) continue;
+        if (!unlocks && opening_blocks(g, allow_contested)) continue;
         const float extra = siege_rounds(g, team_dps, team_hp, unlocks);
         if (extra < 0) continue;
-        if (!g.alive_by(round_ + d + 15)) continue;
+        if (!g.alive_by(round_ + d + respawn_wait)) continue;
         float score = (g.value(kGoldWeight) + (unlocks ? 1000.f : 0.f)) /
                       (group_rounds(g, team_dps, d) + extra + heal_rounds(g, team_dps, team_hp));
         // Contested ground near the enemy spawn is riskier.
@@ -1936,7 +1944,7 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
         if (bc::fuel_remaining() < 20000) break;
         if (!g.harmless || g.unreachable || g.id > kMaxTarget || g.id == exclude || g.state == GroupState::reward) continue;
         if (comms_.claimed_by_other(slot_, Task::solo, g.id, slots_)) continue;
-        if (!allow_risky && risky_early(g)) continue;
+        if (opening_blocks(g, allow_contested)) continue;
         const int d = dist_to_group(g);
         if (d == kUnreached || !g.alive_by(round_ + d + 5)) continue;
         float score = g.value(kGoldWeight) / group_rounds(g, team_dps, d);
@@ -2017,7 +2025,7 @@ void Bot::choose_task(bc::champion& me) {
         if (!may_solo) break;
         if (!g.harmless || g.unreachable || g.id > kMaxTarget || g.state == GroupState::reward) continue;
         if (round_ < avoid_until_[g.id & 63]) continue;
-        if (risky_early(g)) continue;
+        if (opening_blocks(g, false)) continue;
         if (comms_.claimed_by_other(slot_, Task::solo, g.id, slots_) ||
             comms_.claimed_by_other(slot_, Task::capture, g.id, slots_))
             continue;

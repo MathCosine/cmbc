@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <string_view>
+#include <span>
 
 namespace {
 using cambc::champion_draft;
@@ -32,7 +33,13 @@ void play_draft() {
     }
     const auto chosen = cambc::draft::current_draft(cambc::team::ally);
     if (chosen.size() >= cambc::draft::team_size()) return;
-    for (auto pick : kPriority) {
+    // Maps set 3, 4 or 5 champions a side. With 3 or 4 we won 20-25% of ladder games against 39%
+    // with five: the list above gave us Vendetta, Vesper Vale and Ryth, who died 6-7 times each a
+    // game. Without Vendetta and with both stunners (Marcella, Tavi), the 14 small-team maps went
+    // 173/196 against 147/196 locally.
+    constexpr std::array kSmall{champion_draft::vesper_vale, champion_draft::marcella, champion_draft::ryth, champion_draft::tavi, champion_draft::vendetta, champion_draft::willow, champion_draft::varg, champion_draft::heart_of_ruin};
+    const bool small_team = cambc::draft::team_size() <= 4;
+    for (auto pick : small_team ? std::span<const champion_draft>(kSmall) : std::span<const champion_draft>(kPriority)) {
         if (std::find(chosen.begin(), chosen.end(), pick) != chosen.end()) continue;
         cambc::draft::pick(pick);
         return;

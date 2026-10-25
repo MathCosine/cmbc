@@ -82,8 +82,8 @@ private:
 
     // Planning.
     void choose_task(bc::champion& me);
-    int choose_squad_target(float team_dps, float team_hp, int exclude, bool allow_risky = false);
-    bool risky_early(Group& g);
+    int choose_squad_target(float team_dps, float team_hp, int exclude, bool allow_contested = false);
+    bool opening_blocks(Group& g, bool allow_contested);
     void scout_ward(bc::champion& me);
     void local_power(float& dps, float& hp) const;
     Forecast forecast(const Group& g, float dps) const;
