@@ -58,7 +58,7 @@ constexpr std::uint64_t kPlanFuel = 45000;  // fuel needed before optional plann
 // shunning the enemy half 451. All seven together farmed 10% slower even with no enemy around.
 // After two team deaths, a champion that has just respawned waits on spawn for a teammate
 // instead of walking back out alone (28 of 61 deaths on hooks came right after a respawn).
-constexpr bool kEscort = false;
+constexpr bool kEscort = true;
 constexpr int kEscortWindow = 120;  // team deaths this recent mean the enemy is winning fights
 constexpr int kEscortWait = 40;     // longest wait on spawn before going anyway
 // Targets near where we died lately, or where 2+ enemies were seen, score lower; a squad
