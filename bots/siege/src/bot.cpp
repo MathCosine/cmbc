@@ -99,6 +99,13 @@ constexpr bool kStandAndFight = true;
 // enemies than allies within kCrowdRange, do not engage, and leave once they come close.
 constexpr bool kAvoidOutnumbered = true;
 constexpr int kCrowdRange = 6;
+// Fights near camps: camps hit the nearest champion, and an enemy can wake one and leave us
+// nearest. Retreats step out of awake camps' reach too, and a ranged champion does not hold
+// its ground while a camp is hitting it (camp deaths rose to 1.2 a game with v3).
+constexpr bool kCampAwareFights = true;
+// Rounds a squad waits at its target for teammates before giving it up for another. On maps
+// with long walks between targets (corridors) 20 rounds sent the squad back and forth.
+constexpr int kStallRounds = 60;
 constexpr int kEngageRange = 5;
 constexpr int kMaxHold = 6;  // turns a ranged champion waits for an enemy before moving on
 
@@ -752,6 +759,9 @@ bool Bot::fight_enemies(bc::champion& me) {
         if (!kBurstModel) threats.push_back({e.pos, e.range + 1});
         else if (!harmless_on_spawn(e)) threats.push_back({e.pos, e.reach + 1});
     }
+    if (kCampAwareFights)
+        for (const auto& c : camps_)
+            if (c.awake && c.strength > 0) threats.push_back({c.pos, c.range});
     if (nearest_d > 7) {
         // A group coming our way that we cannot fight: leave before it arrives rather than
         // finishing a camp and getting caught.
@@ -855,7 +865,8 @@ bool Bot::fight_enemies(bc::champion& me) {
             const bool low = goal->hp <= strength_ * 2.f;
             // A ranged champion that steps in cannot attack that turn, and a ranged enemy at the
             // edge of its range shoots first: let it come to us instead.
-            if (ranged_ && !busy && !low && hold_turns_ < kMaxHold) {
+            const bool under_fire = kCampAwareFights && incoming_camp_damage(pos_) > 0;
+            if (ranged_ && !busy && !low && hold_turns_ < kMaxHold && !under_fire) {
                 ++hold_turns_;
                 mark("hold");
                 return true;
@@ -1902,7 +1913,7 @@ void Bot::choose_task(bc::champion& me) {
     // without enough people picks something the champions actually present can clear.
     int squad = comms_.squad_target();
     if (squad >= static_cast<int>(W.groups.size())) squad = -1;
-    const bool stalled = squad >= 0 && target_ == squad && task_ == Task::farm && wait_rounds_ > 20 && !W.groups[squad].awake;
+    const bool stalled = squad >= 0 && target_ == squad && task_ == Task::farm && wait_rounds_ > kStallRounds && !W.groups[squad].awake;
     // A squad that could not assemble enough strength here should not come straight back.
     if (stalled) avoid_until_[squad & 63] = round_ + 80;
     if (squad >= 0) {
@@ -1998,7 +2009,7 @@ bool Bot::farm(bc::champion& me) {
         if (!g.alive_by(round_ + 25) || g.state == GroupState::reward) replan = true;
         // Follow the squad when someone moved it.
         if (task_ == Task::farm && target_ != comms_.squad_target()) replan = true;
-        if (wait_rounds_ > 20 && !g.awake) replan = true;
+        if (wait_rounds_ > kStallRounds && !g.awake) replan = true;
         // A solo target we have waited at this long without a fight is not working out
         // (unseen camps, an unreachable tile): try something else for a while.
         if (task_ == Task::solo && wait_rounds_ > 25 && !g.awake) avoid_until_[target_ & 63] = round_ + 60;
