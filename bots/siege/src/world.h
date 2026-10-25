@@ -96,6 +96,14 @@ public:
     int spawn_poi = -1;
     int enemy_spawn_poi = -1;
     bool ready = false;
+    // An altar walled in by camps further out than its neighbours (02the-pack: a ring of 48
+    // wolves around the only altar): the camp tiles on the shortest walk in from our spawn,
+    // outermost first. Fields treat them as open ground, so routes go through once they die.
+    std::vector<vec2> breach;
+    bc::bitboard breach_board;
+    int breach_group = -1;
+    bool breach_planned = false;
+    void plan_breach(std::uint64_t fuel_floor);
 
     void init();
     // Computes a field if it is missing and enough fuel remains; returns null otherwise.

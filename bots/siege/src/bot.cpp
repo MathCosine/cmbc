@@ -169,6 +169,11 @@ constexpr bool kBankEscort = true;
 constexpr int kEscortRange = 12;
 constexpr int kEscortStretch = 10;  // the banker is this close to the altar
 constexpr int kEscortBag = 30;      // and carries at least this many gems
+// Breach. On 02the-pack the only altar sits inside a ring of 48 wolves: our siege rules never
+// took the ring on, and neither side turned in a gem in 2,000 rounds. When no altar can be
+// reached past live camps, the squad kills only the camps on the shortest walk in (see
+// World::plan_breach), and nobody walks to the altar until the way is open.
+constexpr bool kBreach = true;
 constexpr int kEngageRange = 5;
 constexpr int kMaxHold = 6;  // turns a ranged champion waits for an enemy before moving on
 
@@ -659,6 +664,27 @@ bool Bot::escort_banker(bc::champion& me) {
     return false;
 }
 
+bool Bot::breach_active() const {
+    auto& W = world();
+    if (!kBreach || W.breach.empty()) return false;
+    for (auto t : W.breach)
+        if (const auto* c = W.camp_info_at(t); c && c->alive_known) return true;
+    return false;
+}
+
+const SeenCamp* Bot::breach_camp() const {
+    // The outermost breach camp still standing, if we can see it.
+    auto& W = world();
+    for (auto t : W.breach) {
+        const auto* info = W.camp_info_at(t);
+        if (!info || !info->alive_known) continue;
+        for (const auto& c : camps_)
+            if (c.pos == t) return &c;
+        return nullptr;
+    }
+    return nullptr;
+}
+
 bool Bot::capturing_here() const {
     if (task_ != Task::capture || target_ < 0) return false;
     for (auto t : world().groups[target_].tiles)
@@ -883,7 +909,7 @@ void Bot::act(bc::champion& me) {
     if (farm(me)) return;
     mark("idle");
     // Nothing to farm: bank whatever we carry.
-    if (gems_ > 0) {
+    if (gems_ > 0 && !breach_active()) {
         int d = 0;
         const int a = best_altar(d);
         if (a >= 0 && d != kUnreached) {
@@ -1203,6 +1229,13 @@ bool Bot::retreat_from_camps(bc::champion& me) {
 
 bool Bot::engage_ready(const Group& g) {
     if (g.awake || g.harmless) return true;
+    if (g.id == world().breach_group && breach_active()) {
+        // Only the camps within reach of where we stand hit back: go in with a teammate.
+        int here = 1;
+        for (const auto& a : allies_seen_)
+            if (cheb(a.pos, g.anchor) <= g.extent + 5) ++here;
+        return here >= 2 || wait_rounds_ > 20;
+    }
     if (siege_ && g.id == target_) {
         float dps = 0, hp = 0;
         int living = 0;
@@ -1256,6 +1289,19 @@ bool Bot::fight_camps(bc::champion& me) {
         if (c.group != gid) continue;
         if (better(&c, focus)) focus = &c;
         if (cheb(c.pos, pos_) <= range_ && better(&c, in_range)) in_range = &c;
+    }
+    if (gid == W.breach_group && breach_active()) {
+        // Breaching: the outermost camp on the way in, nothing else in the ring.
+        focus = breach_camp();
+        in_range = focus && cheb(focus->pos, pos_) <= range_ ? focus : nullptr;
+        if (!focus) {
+            for (auto t : W.breach)
+                if (const auto* info = W.camp_info_at(t); info && info->alive_known) {
+                    approach_unit(me, t, range_);
+                    break;
+                }
+            return true;
+        }
     }
     if (!focus) return false;
     if (task_ != Task::capture) set_status(task_ == Task::solo ? Task::solo : Task::farm, gid);
@@ -1870,7 +1916,7 @@ bool Bot::abandon_tribute(bc::champion& me) {
 }
 
 bool Bot::tribute(bc::champion& me) {
-    if (gems_ <= 0) return false;
+    if (gems_ <= 0 || breach_active()) return false;
     int d = 0;
     const int a = best_altar(d);
     if (a < 0 || d == kUnreached) return false;
@@ -2164,6 +2210,8 @@ bool Bot::any_altar_open() const {
 }
 
 int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool allow_contested) {
+    // Nothing can be banked until the way to an altar is open.
+    if (breach_active()) return world().breach_group;
     // In the opening, our own camps are worth waiting a while for rather than walking off.
     const int respawn_wait = kSafeOpening && round_ < kOpeningRounds && !allow_contested ? 60 : 15;
     auto& W = world();
@@ -2239,7 +2287,8 @@ void Bot::choose_task(bc::champion& me) {
     // without enough people picks something the champions actually present can clear.
     int squad = comms_.squad_target();
     if (squad >= static_cast<int>(W.groups.size())) squad = -1;
-    const bool stalled = squad >= 0 && target_ == squad && task_ == Task::farm && wait_rounds_ > kStallRounds && !W.groups[squad].awake;
+    const bool breaching = squad >= 0 && squad == W.breach_group && breach_active();
+    const bool stalled = !breaching && squad >= 0 && target_ == squad && task_ == Task::farm && wait_rounds_ > kStallRounds && !W.groups[squad].awake;
     // A squad that could not assemble enough strength here should not come straight back.
     if (stalled) avoid_until_[squad & 63] = round_ + 80;
     if (squad >= 0) {
@@ -2261,7 +2310,7 @@ void Bot::choose_task(bc::champion& me) {
         // than walk back there one at a time.
         const bool deadly = kDangerMemory && !g.awake && !unlocks && danger_factor(g.anchor) < 0.35f;
         if (deadly) avoid_until_[squad & 63] = round_ + 60;
-        if (stale || stalled || blocked_for_me || deadly) squad = -1;
+        if ((stale || stalled || blocked_for_me || deadly) && !breaching) squad = -1;
     }
     if (squad < 0 && bc::fuel_remaining() > 30000) {
         float dps = team_dps, hp = team_hp;

@@ -148,6 +148,8 @@ private:
     bool altar_guarded(vec2 altar) const;
     int altar_exposure(vec2 altar) const;
     bool escort_banker(bc::champion& me);
+    bool breach_active() const;
+    const SeenCamp* breach_camp() const;
     bool on_spawn() const { return world().ally_spawn.get(pos_); }
 
     // Match constants.

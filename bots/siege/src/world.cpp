@@ -22,6 +22,10 @@ void World::init() {
     pois.clear();
     altar_poi.clear();
     precompute_next = 0;
+    breach.clear();
+    breach_board.clear();
+    breach_group = -1;
+    breach_planned = false;
     w = bc::map::width();
     h = bc::map::height();
     const auto& enemy_region = bc::map::spawn_region(team::enemy);
@@ -121,6 +125,7 @@ const bc::distance_field* World::field(int poi_id, std::uint64_t fuel_floor) {
         for (auto t : poi.tiles) beside.draw_chebyshev(t, 1);
         camps &= ~beside;
     }
+    if (!breach.empty()) camps &= ~breach_board;
     field->compute((blocked_board | camps) & ~roots, roots, visited);
     poi.field = std::move(field);
     return poi.field.get();
@@ -152,7 +157,44 @@ std::uint16_t World::dist_on(const bc::distance_field& f, vec2 p) const {
     return kUnreached;
 }
 
+void World::plan_breach(std::uint64_t fuel_floor) {
+    if (breach_planned) return;
+    const std::uint64_t estimate = static_cast<std::uint64_t>(w) * h * 3 + 2000;
+    if (bc::fuel_remaining() < fuel_floor + estimate * (altars.size() + 2)) return;  // a later turn
+    breach_planned = true;
+    if (altars.empty() || spawn_tiles.empty()) return;
+    const vec2 home = spawn_tiles[spawn_tiles.size() / 2];
+    // An altar we can walk to past the live camps needs no breach.
+    for (std::size_t i = 0; i < altar_poi.size(); ++i)
+        if (dist(altar_poi[i], home, 0) != kUnreached) return;
+    // Walk in on terrain alone and note the camps on the way; keep the altar needing fewest kills.
+    for (auto altar : altars) {
+        bc::bitboard roots;
+        roots.clear();
+        roots.set(altar);
+        bc::distance_field f;
+        bc::bitboard visited;
+        f.compute(blocked_board & ~roots, roots, visited);
+        if (f.get(home) == kUnreached) continue;
+        std::vector<vec2> on_path;
+        vec2 p = home;
+        for (int step = 0; step < w * h && p != altar; ++step) {
+            const auto move = f.next_move_from(p);
+            if (!move) break;
+            p += *move;
+            if (camp_grid.get(p)) on_path.push_back(p);
+        }
+        if (!on_path.empty() && (breach.empty() || on_path.size() < breach.size())) breach = std::move(on_path);
+    }
+    if (breach.empty()) return;
+    breach_group = group_id_at(breach.front());
+    for (auto t : breach) breach_board.set(t);
+    // Altar routes so far went around the breach camps: compute them again through it.
+    for (int poi : altar_poi) pois[poi].field.reset();
+}
+
 void World::precompute(std::uint64_t fuel_floor) {
+    plan_breach(fuel_floor);
     // Spawns and altars first (every trip home and every tribute needs them), then groups.
     const std::size_t specials = 2 + altar_poi.size();
     while (precompute_next < pois.size()) {
