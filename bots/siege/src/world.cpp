@@ -99,6 +99,14 @@ void World::init() {
     }
 
     camp_grid.load(camp_board, w, h);
+    // Precompute fields nearest first. In group order, the first targets on a big map (100x100)
+    // were whichever low-numbered groups had fields: the squad walked 40-60 tiles to them and
+    // left the camps beside our spawn for 200 rounds.
+    group_order.clear();
+    for (std::size_t i = 0; i < groups.size(); ++i) group_order.push_back(static_cast<int>(i));
+    std::sort(group_order.begin(), group_order.end(), [&](int a, int b) {
+        return cheb(groups[a].anchor, ally_centre) < cheb(groups[b].anchor, ally_centre);
+    });
     spawn_poi = add_poi({}, &bc::map::spawn_region(team::ally), true);
     enemy_spawn_poi = add_poi({}, &enemy_region, false);
     for (auto altar : altars) altar_poi.push_back(add_poi({altar}, nullptr, false));
@@ -203,7 +211,7 @@ void World::precompute(std::uint64_t fuel_floor) {
         if (index == 0) poi = spawn_poi;
         else if (index == 1) poi = enemy_spawn_poi;
         else if (index < specials) poi = altar_poi[index - 2];
-        else poi = groups[index - specials].poi;
+        else poi = groups[group_order[index - specials]].poi;
         if (!has_field(poi) && !field(poi, fuel_floor)) return;
         ++precompute_next;
     }

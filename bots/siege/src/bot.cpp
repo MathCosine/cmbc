@@ -685,6 +685,14 @@ const SeenCamp* Bot::breach_camp() const {
     return nullptr;
 }
 
+std::vector<int> Bot::nearest_groups() const {
+    const auto& W = world();
+    std::vector<int> order(W.groups.size());
+    for (std::size_t i = 0; i < order.size(); ++i) order[i] = static_cast<int>(i);
+    std::sort(order.begin(), order.end(), [&](int a, int b) { return cheb(W.groups[a].anchor, pos_) < cheb(W.groups[b].anchor, pos_); });
+    return order;
+}
+
 bool Bot::capturing_here() const {
     if (task_ != Task::capture || target_ < 0) return false;
     for (auto t : world().groups[target_].tiles)
@@ -2217,9 +2225,13 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
     auto& W = world();
     team_dps *= kFightEfficiency;
     const bool altar_reachable = any_altar_open();
+    // Nearest first: the loop stops when fuel runs low, and in group order it used to stop
+    // before reaching the camps beside us (01big-world: four island groups came first).
+    const auto order = nearest_groups();
     int best = -1;
     float best_score = 0;
-    for (auto& g : W.groups) {
+    for (const int gi : order) {
+        auto& g = W.groups[gi];
         if (bc::fuel_remaining() < 20000) break;
         if (g.unreachable || g.harmless || g.id > kMaxTarget || g.id == exclude || g.state == GroupState::reward) continue;
         if (round_ < avoid_until_[g.id & 63]) continue;
@@ -2247,7 +2259,8 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
     // Nothing dangerous is worth it (clusters only, or every camp respawning): the squad
     // farms clusters together rather than scattering, which leaves lone champions for
     // an enemy team to pick off.
-    for (auto& g : W.groups) {
+    for (const int gi : order) {
+        auto& g = W.groups[gi];
         if (bc::fuel_remaining() < 20000) break;
         if (!g.harmless || g.unreachable || g.id > kMaxTarget || g.id == exclude || g.state == GroupState::reward) continue;
         if (comms_.claimed_by_other(slot_, Task::solo, g.id, slots_)) continue;
@@ -2328,9 +2341,11 @@ void Bot::choose_task(bc::champion& me) {
         if (i != slot_ && comms_.slot(i).task == Task::solo) ++solos;
     const bool may_solo = solos < std::max(1, active / 3) || squad < 0;
     const float my_dps = dps_of(type_, strength_, focus_);
+    const auto order = nearest_groups();
     int solo = -1;
     float solo_score = 0;
-    for (auto& g : W.groups) {
+    for (const int gi : order) {
+        auto& g = W.groups[gi];
         if (!may_solo) break;
         if (g.unreachable || g.id > kMaxTarget || g.state == GroupState::reward || g.id == squad) continue;
         if (!g.harmless && !kSoloCamps) continue;

@@ -104,6 +104,8 @@ public:
     int breach_group = -1;
     bool breach_planned = false;
     void plan_breach(std::uint64_t fuel_floor);
+    // Groups nearest our spawn first: the order distance fields are precomputed in.
+    std::vector<int> group_order;
 
     void init();
     // Computes a field if it is missing and enough fuel remains; returns null otherwise.
