@@ -17,6 +17,11 @@ int World::add_poi(std::vector<vec2> tiles, const bc::bitboard* board, bool walk
 }
 
 void World::init() {
+    // A turn that runs out of fuel in here runs it again next turn: start from empty lists.
+    groups.clear();
+    pois.clear();
+    altar_poi.clear();
+    precompute_next = 0;
     w = bc::map::width();
     h = bc::map::height();
     const auto& enemy_region = bc::map::spawn_region(team::enemy);
@@ -38,6 +43,9 @@ void World::init() {
     // Camp design stats are per kind; query each kind once.
     std::array<std::optional<bc::camp_stats>, 6> kind_stats;
     const auto raw_groups = bc::map::camp_groups();
+    // Growing these lists one push at a time cost most of the setup's fuel on big maps.
+    groups.reserve(raw_groups.size());
+    pois.reserve(raw_groups.size() + 2 + altars.size());
     for (const auto& raw : raw_groups) {
         Group g;
         g.id = static_cast<int>(groups.size());
@@ -45,6 +53,9 @@ void World::init() {
         g.gems = static_cast<int>(raw.gem_value());
         g.gold = static_cast<int>(raw.gold_value());
         g.respawn = raw.max_respawn_timer();
+        g.camps.reserve(raw.camps().size());
+        g.tiles.reserve(raw.camps().size());
+        g.by_strength.reserve(raw.camps().size());
         for (const auto& c : raw.camps()) {
             const auto kind = c.kind();
             auto& stats = kind_stats[static_cast<int>(kind)];
@@ -62,9 +73,16 @@ void World::init() {
         }
         if (g.camps.empty()) continue;
         g.harmless = g.strength <= 0;
-        for (int i = 0; i < static_cast<int>(g.camps.size()); ++i) g.by_strength.push_back(i);
-        std::stable_sort(g.by_strength.begin(), g.by_strength.end(),
-                         [&](int a, int b) { return g.camps[a].strength > g.camps[b].strength; });
+        // Strongest first, ties in map order (insertion sort: a group has a handful of camps).
+        for (int i = 0; i < static_cast<int>(g.camps.size()); ++i) {
+            int j = static_cast<int>(g.by_strength.size());
+            g.by_strength.push_back(i);
+            while (j > 0 && g.camps[g.by_strength[j - 1]].strength < g.camps[i].strength) {
+                g.by_strength[j] = g.by_strength[j - 1];
+                --j;
+            }
+            g.by_strength[j] = i;
+        }
         g.hp_left = g.max_hp;
         // Anchor on the tile closest to the group's centre so distances are representative.
         vec2 sum{0, 0};

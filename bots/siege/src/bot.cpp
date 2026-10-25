@@ -49,6 +49,8 @@ constexpr int kCarryGems = 40;
 constexpr float kFightEfficiency = 0.6f;
 constexpr int kRewardTimeout = 8;  // rounds a reward out of sight is assumed to stay uncaptured
 constexpr std::uint64_t kPlanFuel = 45000;  // fuel needed before optional planning work
+constexpr std::uint64_t kSetupFuel = 60000;  // left after building the map to finish setup this turn
+constexpr std::uint64_t kActFuel = 50000;    // left after setup to act this turn
 
 // Staying alive. Most deaths come from enemy champions, mostly alone, and every one costs
 // 60 rounds out plus the walk back. Each switch was tested on its own against seven local
@@ -129,6 +131,44 @@ constexpr bool kEarlyWarning = false;
 // danger or the fight is clearly lost (outnumbered, or out-damaged); holding even when
 // outnumbered by one cost deaths locally.
 constexpr bool kHoldCapture = true;
+// Marcella banks. In a lost v7 game the other team's Marcella collected 514 of their 813 camp
+// gems from camps her teammates had cleared and turned them in in small bags (Marcella gains 2
+// gold per gem turned in): 5,161 gold against our Marcella's 750, who turned in nothing.
+// Teammates leave gem rewards to our Marcella when she is free and within kBankerReach, and
+// move on to the next camp; she claims gem rewards from further out and banks at kBankerCarry.
+// Locally her share of our gems went from 23% to 48% and her gold by round 600 from 530 to
+// 1,319: 457 against 434 wins out of 560, 46/80 against v7 and v6, though farming with no
+// enemy around is 7% slower (more walking to rewards and the altar).
+constexpr bool kMarcellaBank = true;
+constexpr int kBankerReach = 8;
+constexpr int kBankerClaim = 14;
+constexpr int kBankerCarry = 20;
+// Solo camps. The squad takes one camp at a time, and in that game never cleared the wolf
+// nearest our spawn (the other team cleared theirs 11 times). One champion may take a
+// fighting camp on our side alone when the forecast says it costs under kSoloShare of its health.
+// Off: it fixed that (the nearest wolf on 00collision 0 to 5 clears a game) and farmed 1%
+// faster, but lost head to head: 38/80 against v7, and 36/80 with the banker against the banker.
+constexpr bool kSoloCamps = false;
+constexpr float kSoloShare = 0.45f;
+// Safe altar trips. 4 of 9 deaths in that game came at the only altar, with 66- and 59-gem
+// bags, and gems lost on death go to the killer. Do not walk up to an altar with enemies around
+// it unless we outnumber them, and do not stand alone hitting an enemy lock with enemies near:
+// farm for kAltarWait rounds and come back.
+// Off: a little behind in every combination tested (38/80 against v7 alone, 36/80 against the
+// banker with it).
+constexpr bool kSafeAltar = false;
+constexpr int kAltarWait = 20;
+// Bank escort. Our deaths at the centre altar were all one champion turning in alone, with the
+// enemy arriving mid-trip. When a teammate walks to an altar in the middle (or on the enemy
+// side), the nearest free teammate within kEscortRange goes along (two for an enemy-side altar),
+// for the last kEscortStretch tiles of a kEscortBag+ trip; the banker waits up to 8 rounds for it.
+// Escorting every trip took up to 28% of rounds. Locally even with the banker alone (455 against
+// 457 of 560, 49/80 against v7, 38/80 against the banker alone, farming 2% slower): the sparring
+// bots rarely hunt at the altar, so this is on for a ladder test.
+constexpr bool kBankEscort = true;
+constexpr int kEscortRange = 12;
+constexpr int kEscortStretch = 10;  // the banker is this close to the altar
+constexpr int kEscortBag = 30;      // and carries at least this many gems
 constexpr int kEngageRange = 5;
 constexpr int kMaxHold = 6;  // turns a ranged champion waits for an enemy before moving on
 
@@ -265,8 +305,18 @@ float Bot::design_dps(const bc::champion& c, float strength, float focus) const 
 void Bot::init(bc::champion& me) {
     auto& W = world();
     mark("init-world");
-    if (!W.ready) W.init();
+    if (!W.ready) {
+        W.init();
+        // On big maps building the map takes most of the first turn's fuel: finish setting up
+        // next turn rather than run out of fuel halfway (which loses the turn anyway).
+        if (bc::fuel_remaining() < kSetupFuel) return;
+    }
     mark("init-allies");
+    // Safe to run again if a turn ran out of fuel in here.
+    ally_dps_.clear();
+    ally_hp_.clear();
+    spells_.clear();
+    banker_slot_ = -1;
     type_ = me.champion_name();
     const auto stats = me.base_stats();
     range_ = stats.base_attack_range;
@@ -277,6 +327,7 @@ void Bot::init(bc::champion& me) {
     for (int i = 0; i < static_cast<int>(allies_.size()); ++i) {
         if (allies_[i] == me) slot_ = i;
         const auto t = allies_[i].champion_name();
+        if (t == bc::champion_type::marcella && banker_slot_ < 0) banker_slot_ = i;
         bc::champion design{t};
         const auto s = design.base_stats();
         ally_dps_.push_back(dps_of(t, s.base_strength, s.base_focus));
@@ -299,10 +350,10 @@ void Bot::init(bc::champion& me) {
         spells_.push_back(spell);
     }
     my_design_dps_ = dps_of(type_, stats.base_strength, stats.base_focus);
+    ready_ = true;
     // The first turn has double fuel: precompute the trip home and the nearest targets.
     mark("init-precompute");
     W.precompute(110000);
-    ready_ = true;
 }
 
 void Bot::observe(bc::champion& me) {
@@ -503,6 +554,7 @@ bool Bot::enemy_passive() const { return round_ > 300 && !enemy_recent(250) && r
 
 int Bot::carry_gems() const {
     if (pressured()) return kSmallBag;
+    if (kMarcellaBank && type_ == bc::champion_type::marcella) return kBankerCarry;
     return kSmallBags ? kSmallCarry : kCarryGems;
 }
 
@@ -513,6 +565,98 @@ float Bot::enemy_side_factor(bool solo) const {
     if (!kShunEnemySide) return solo ? 0.6f : 0.7f;
     if (enemy_passive()) return solo ? 0.7f : 0.8f;
     return solo ? 0.35f : 0.45f;
+}
+
+bool Bot::banker_free_near(vec2 p, int range, int group) const {
+    // Our Marcella, alive and in sight within range of p, and not busy banking, going home or
+    // collecting another reward.
+    if (!kMarcellaBank || banker_slot_ < 0 || banker_slot_ == slot_ || banker_slot_ >= slots_) return false;
+    if (slot_dead_[banker_slot_]) return false;
+    const auto st = comms_.slot(banker_slot_);
+    if (st.task == Task::other || (st.task == Task::capture && st.target != group)) return false;
+    for (const auto& a : allies_seen_)
+        if (a.handle == allies_[banker_slot_]) return cheb(a.pos, p) <= range;
+    return false;
+}
+
+bool Bot::solo_camp_ok(Group& g, float dps) {
+    // A fighting camp on our side, away from the middle, that we clear alone and stay healthy.
+    if (enemy_side(g) || g.contested) return false;
+    return forecast(g, dps).damage <= hp_ * kSoloShare;
+}
+
+bool Bot::altar_guarded(vec2 altar) const {
+    // Enemies around the altar (or on us) and no more of us than of them close by.
+    int theirs = 0, ours = 1;
+    for (const auto& e : enemies_)
+        if (!harmless_on_spawn(e) && (cheb(e.pos, altar) <= 6 || cheb(e.pos, pos_) <= 4)) ++theirs;
+    if (theirs == 0) return false;
+    for (const auto& a : allies_seen_)
+        if (cheb(a.pos, pos_) <= kCrowdRange) ++ours;
+    return ours <= theirs;
+}
+
+int Bot::altar_exposure(vec2 altar) const {
+    // 0: our side, 1: the middle, 2: the enemy side.
+    const auto& W = world();
+    const int mine = cheb(altar, W.ally_centre), theirs = cheb(altar, W.enemy_centre);
+    if (theirs < mine - std::max(4, (mine + theirs) / 10)) return 2;
+    if (theirs <= mine + std::max(4, (mine + theirs) / 10)) return 1;
+    return 0;
+}
+
+bool Bot::escort_banker(bc::champion& me) {
+    // Walk with a teammate who is taking gems to an altar in the middle or on the enemy side,
+    // when we are the nearest free teammate (the two nearest for the enemy side).
+    if (task_ == Task::capture || hp_ < max_hp_ * 0.5f || on_spawn()) return false;
+    const auto& W = world();
+    for (int i = 0; i < slots_; ++i) {
+        if (i == slot_) continue;
+        const auto st = comms_.slot(i);
+        if (st.task != Task::other || st.target != kTribute) continue;
+        const SeenChamp* banker = nullptr;
+        for (const auto& a : allies_seen_)
+            if (a.handle == allies_[i]) banker = &a;
+        if (!banker || cheb(banker->pos, pos_) > kEscortRange || W.ally_spawn.get(banker->pos)) continue;
+        // The altar it is heading for: the nearest one to it. Escort only the last stretch, and
+        // only a bag worth guarding.
+        vec2 altar = banker->pos;
+        int best = 1 << 20;
+        for (auto a : W.altars)
+            if (cheb(a, banker->pos) < best) {
+                best = cheb(a, banker->pos);
+                altar = a;
+            }
+        if (best > kEscortStretch) continue;
+        const int exposure = altar_exposure(altar);
+        if (exposure == 0) continue;
+        int bag = 0;
+        try {
+            bag = static_cast<int>(banker->handle.gem_count());
+        } catch (const std::exception&) {
+            continue;
+        }
+        if (bag < kEscortBag) continue;
+        // Escorts needed, and how many free teammates are closer to the banker than we are.
+        const int needed = exposure;
+        const int mine = cheb(banker->pos, pos_);
+        int closer = 0;
+        for (int j = 0; j < slots_; ++j) {
+            if (j == slot_ || j == i) continue;
+            const auto sj = comms_.slot(j);
+            if (sj.task != Task::farm && sj.task != Task::solo) continue;
+            for (const auto& a : allies_seen_)
+                if (a.handle == allies_[j]) {
+                    const int d = cheb(banker->pos, a.pos);
+                    if (d < mine || (d == mine && j < slot_)) ++closer;
+                }
+        }
+        if (closer >= needed) continue;
+        mark("escort-bank");
+        if (mine > 2) approach_unit(me, banker->pos, 2);
+        return true;
+    }
+    return false;
 }
 
 bool Bot::capturing_here() const {
@@ -572,7 +716,12 @@ bool Bot::wait_for_escort() {
 void Bot::play_turn() {
     auto& me = bc::self();
     debug_block({ g_marks.clear(); g_marks.push_back({"start", bc::fuel_remaining()}); });
-    if (!ready_) init(me);
+    if (!ready_) {
+        init(me);
+        // Setup used most of this turn's fuel: start acting next turn instead of running out
+        // of fuel halfway through planning.
+        if (!ready_ || bc::fuel_remaining() < kActFuel) return;
+    }
     round_ = static_cast<int>(bc::round_number());
     comms_.read();
     // Team deaths, from slots switching to "dead" in team memory.
@@ -728,6 +877,8 @@ void Bot::act(bc::champion& me) {
     if (tribute(me)) return;
     mark("capture");
     if (capture(me)) return;
+    mark("escort-bank");
+    if (kBankEscort && escort_banker(me)) return;
     mark("farm");
     if (farm(me)) return;
     mark("idle");
@@ -1732,11 +1883,46 @@ bool Bot::tribute(bc::champion& me) {
     const bool threatened = kSmallBags ? enemy_recent(kRecentEnemy) : !enemies_.empty();
     const bool want = gems_ >= carry_gems() || endgame || wins || d <= 6 || (threatened && gems_ >= kSmallBag) ||
                       task_ == Task::other;
-    if (!want) return false;
+    if (!want) {
+        escort_wait_ = 0;
+        return false;
+    }
+    const vec2 altar = world().altars[a];
+    if (kSafeAltar && !endgame && !wins) {
+        if (round_ < altar_wait_until_) return false;
+        // Enemies hold the altar and we do not outnumber them: dying here hands them the bag.
+        // Farm for a while and come back.
+        if (cheb(pos_, altar) <= 10 && altar_guarded(altar)) {
+            altar_wait_until_ = round_ + kAltarWait;
+            if (task_ == Task::other) {
+                task_ = Task::farm;
+                target_ = -1;
+            }
+            mark("altar-guarded");
+            return false;
+        }
+    }
+    if (kBankEscort && !endgame && !wins && gems_ >= kEscortBag && escort_wait_ < 8 && cheb(pos_, altar) <= 9 &&
+        cheb(pos_, altar) > bc::constants::submit_gems_range && altar_exposure(altar) > 0) {
+        // An altar in the middle: let the teammate walking with us catch up before going in.
+        bool with = false, coming = false;
+        for (const auto& a : allies_seen_) {
+            const int d = cheb(a.pos, pos_);
+            if (d <= 3) with = true;
+            else if (d <= kEscortRange + 3) coming = true;
+        }
+        if (!with && coming) {
+            ++escort_wait_;
+            task_ = Task::other;
+            target_ = kTribute;
+            set_status(Task::other, kTribute);
+            mark("wait-escort");
+            return true;
+        }
+    }
     task_ = Task::other;
     target_ = kTribute;
     set_status(Task::other, kTribute);
-    const vec2 altar = world().altars[a];
     if (cheb(pos_, altar) <= bc::constants::submit_gems_range) {
         // A channel the enemies here would cut short just hands them the bag.
         const float threat = tribute_threat();
@@ -1785,18 +1971,32 @@ bool Bot::capture(bc::champion& me) {
             capture_fail_ = 0;
         }
     }
+    // Our Marcella is coming for this gem reward: leave it to her (rewards are split among
+    // allies standing on the region) and get on with the next camp.
+    if (task_ == Task::capture && target_ >= 0 && W.groups[target_].gems > 0 && banker_slot_ >= 0 &&
+        comms_.slot(banker_slot_).task == Task::capture && comms_.slot(banker_slot_).target == target_ &&
+        banker_free_near(W.groups[target_].anchor, kBankerReach, target_)) {
+        task_ = Task::farm;
+        target_ = -1;
+        capture_fail_ = 0;
+    }
     if (task_ != Task::capture) {
         // Claim a waiting reward nearby that nobody else is collecting.
+        const bool banker = kMarcellaBank && type_ == bc::champion_type::marcella;
         int best = -1, best_d = 1000;
         for (auto& g : W.groups) {
             if (g.state != GroupState::reward || g.seen_round != round_) continue;
             if (opening_blocks(g, true)) continue;
             const int d = cheb(g.anchor, pos_);
-            if (d > 10 || d >= best_d || g.id > kMaxTarget || round_ < avoid_until_[g.id & 63]) continue;
+            if (d > (banker && g.gems > 0 ? kBankerClaim : 10) || d >= best_d || g.id > kMaxTarget || round_ < avoid_until_[g.id & 63]) continue;
+            // Marcella turns gems into gold: leave gem rewards to her when she is close and free.
+            if (g.gems > 0 && banker_free_near(g.anchor, kBankerReach, g.id)) continue;
             // Rewards are split among allies standing on the region: with small bags, big gem
             // rewards are shared so no single champion walks off with a bag worth dying for.
             const int sharers = !kSmallBags ? 1 : g.gems >= 100 ? 5 : g.gems >= 40 ? 3 : 1;
-            if (comms_.claims_by_others(slot_, Task::capture, g.id, slots_) >= sharers) continue;
+            // Close by, Marcella takes a gem reward over (the claimant leaves it to her).
+            const bool take_over = banker && g.gems > 0 && d <= kBankerReach;
+            if (!take_over && comms_.claims_by_others(slot_, Task::capture, g.id, slots_) >= sharers) continue;
             best = g.id;
             best_d = d;
         }
@@ -2072,7 +2272,8 @@ void Bot::choose_task(bc::champion& me) {
         else squad = comms_.squad_target();
     }
 
-    // Solo work is limited to harmless clusters nearby, and to a third of the team.
+    // Solo work is limited to harmless clusters nearby (and, with kSoloCamps, fighting camps
+    // on our side we can clear alone), and to a third of the team.
     int solos = 0;
     for (int i = 0; i < slots_; ++i)
         if (i != slot_ && comms_.slot(i).task == Task::solo) ++solos;
@@ -2082,7 +2283,8 @@ void Bot::choose_task(bc::champion& me) {
     float solo_score = 0;
     for (auto& g : W.groups) {
         if (!may_solo) break;
-        if (!g.harmless || g.unreachable || g.id > kMaxTarget || g.state == GroupState::reward) continue;
+        if (g.unreachable || g.id > kMaxTarget || g.state == GroupState::reward || g.id == squad) continue;
+        if (!g.harmless && !kSoloCamps) continue;
         if (round_ < avoid_until_[g.id & 63]) continue;
         if (opening_blocks(g, false)) continue;
         if (comms_.claimed_by_other(slot_, Task::solo, g.id, slots_) ||
@@ -2090,6 +2292,8 @@ void Bot::choose_task(bc::champion& me) {
             continue;
         if (bc::fuel_remaining() < 12000) break;
         if (cheb(g.anchor, pos_) > 24) continue;
+        // Fighting camps cost a distance field and a forecast each: only with fuel to spare.
+        if (!g.harmless && (bc::fuel_remaining() < 35000 || !solo_camp_ok(g, my_dps))) continue;
         const int d = dist_to_group(g);
         if (d == kUnreached || d > (squad < 0 ? 60 : 20)) continue;
         if (!g.alive_by(round_ + d + 5)) continue;

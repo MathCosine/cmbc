@@ -143,6 +143,11 @@ private:
     bool wait_for_escort();
     bool early_warning(bc::champion& me);
     bool capturing_here() const;
+    bool banker_free_near(vec2 p, int range, int group) const;
+    bool solo_camp_ok(Group& g, float dps);
+    bool altar_guarded(vec2 altar) const;
+    int altar_exposure(vec2 altar) const;
+    bool escort_banker(bc::champion& me);
     bool on_spawn() const { return world().ally_spawn.get(pos_); }
 
     // Match constants.
@@ -242,4 +247,7 @@ private:
     int team_death_next_ = 0;
     int hold_turns_ = 0;  // turns spent waiting for an enemy to step into our range
     vec2 ward_pos_{-100, -100};  // where our ward stands
+    int banker_slot_ = -1;       // our Marcella's slot, if we drafted her
+    int altar_wait_until_ = -1;  // enemies held the altar: farm until this round
+    int escort_wait_ = 0;        // rounds this altar trip has waited for a teammate
 };
