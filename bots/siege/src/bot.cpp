@@ -118,6 +118,10 @@ constexpr int kStallRounds = 60;
 // Until kOpeningRounds, contested and enemy-side camps are taken only when nothing else is left.
 constexpr bool kSafeOpening = true;
 constexpr int kOpeningRounds = 250;
+// Soft opening (v12): contested camps count at kOpeningContested of their score in the opening
+// instead of only as a fallback; enemy-side camps stay out.
+constexpr bool kSoftOpening = true;
+constexpr float kOpeningContested = 0.35f;
 // Scout wards. Ladder teams re-place their ward about every 12 rounds (a quarter of the time in a
 // bush) and land the first hit in more fights; ours sat at old capture spots (every 68 rounds,
 // 1% in bushes). Whenever the ward is ready and we have moved on, re-place it within 2 tiles,
@@ -180,6 +184,11 @@ constexpr float kSiegeShare = 0.85f;
 // 00corners five of us died with 48-85 gems at the middle altar their team banks at, while
 // the corner altars were free.
 constexpr bool kAltarDanger = true;
+// Side jobs (v12): while the squad's target respawns for more than kWaitJobMin rounds, any of us
+// may clear a nearby camp alone (gold and gem clusters, and fighting camps on our side that cost
+// under kSoloShare of our health), if it can be back before the respawn.
+constexpr bool kWaitJobs = true;
+constexpr int kWaitJobMin = 20;
 constexpr int kEscortRange = 12;
 constexpr int kEscortStretch = 10;  // the banker is this close to the altar
 constexpr int kEscortBag = 30;      // and carries at least this many gems
@@ -2247,7 +2256,10 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
     // Wait for the camps beside us to respawn rather than walking across the map: on 01big-world
     // the squad walked 60-75 tiles to a far camp whenever the two by our spawn were respawning,
     // and cleared those half as often as the other team (6 against 12 times each).
-    const int respawn_wait = kRespawnWait;
+    // In the opening, though, a respawning camp on our side must not keep the squad off a big
+    // contested one (01concentrated-wealth: the 71-gem middle camp waited until round 369, not
+    // 105): there the old 60-round wait applies, and contested camps stay a fallback.
+    const int respawn_wait = kSafeOpening && round_ < kOpeningRounds ? (allow_contested ? 15 : 60) : kRespawnWait;
     auto& W = world();
     team_dps *= kFightEfficiency;
     const bool altar_reachable = any_altar_open();
@@ -2267,7 +2279,14 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
         const bool unlocks = !altar_reachable && blocks_altar(g);
         if (d == kUnreached) continue;
         // Camps walling in every altar stay a target: nothing can be banked until they fall.
-        if (!unlocks && opening_blocks(g, allow_contested)) continue;
+        // In the opening a contested camp counts for less rather than nothing: with only poor camps
+        // on our side, the squad used to walk 100 tiles for a 4-gem wolf (01concentrated-wealth)
+        // while the 71-gem camp in the middle waited until round 369.
+        bool contested_now = false;
+        if (!unlocks && opening_blocks(g, allow_contested)) {
+            if (!(kSoftOpening && g.contested)) continue;
+            contested_now = true;
+        }
         const float extra = siege_rounds(g, team_dps, team_hp, unlocks);
         if (extra < 0) continue;
         if (!g.alive_by(round_ + d + respawn_wait)) continue;
@@ -2275,6 +2294,7 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
                       (group_rounds(g, team_dps, d) + extra + heal_rounds(g, team_dps, team_hp));
         // Contested ground near the enemy spawn is riskier.
         if (enemy_side(g)) score *= enemy_side_factor(false);
+        if (contested_now) score *= kOpeningContested;
         score *= target_danger(g);
         if (score > best_score) {
             best_score = score;
@@ -2365,7 +2385,14 @@ void Bot::choose_task(bc::champion& me) {
     int solos = 0;
     for (int i = 0; i < slots_; ++i)
         if (i != slot_ && comms_.slot(i).task == Task::solo) ++solos;
-    const bool may_solo = solos < std::max(1, active / 3) || squad < 0;
+    // Side jobs while the squad waits: with its target respawning for a while, anyone may clear
+    // a nearby camp alone that it can finish and walk back from before the respawn. On 00rows 15%
+    // of champion time went to standing beside a respawning camp.
+    int squad_wait = 0;
+    if (kWaitJobs && squad >= 0 && W.groups[squad].state == GroupState::respawning)
+        squad_wait = W.groups[squad].respawn_round - round_ - dist_to_group(W.groups[squad]);
+    const bool waiting = squad_wait > kWaitJobMin;
+    const bool may_solo = waiting || solos < std::max(1, active / 3) || squad < 0;
     const float my_dps = dps_of(type_, strength_, focus_);
     const auto order = nearest_groups();
     int solo = -1;
@@ -2374,7 +2401,7 @@ void Bot::choose_task(bc::champion& me) {
         auto& g = W.groups[gi];
         if (!may_solo) break;
         if (g.unreachable || g.id > kMaxTarget || g.state == GroupState::reward || g.id == squad) continue;
-        if (!g.harmless && !kSoloCamps) continue;
+        if (!g.harmless && !kSoloCamps && !waiting) continue;
         if (round_ < avoid_until_[g.id & 63]) continue;
         if (opening_blocks(g, false)) continue;
         if (comms_.claimed_by_other(slot_, Task::solo, g.id, slots_) ||
@@ -2387,6 +2414,8 @@ void Bot::choose_task(bc::champion& me) {
         const int d = dist_to_group(g);
         if (d == kUnreached || d > (squad < 0 ? 60 : 20)) continue;
         if (!g.alive_by(round_ + d + 5)) continue;
+        // A side job has to be done (there, clear, capture, back) before the squad's camp returns.
+        if (waiting && 2 * d + forecast(g, my_dps).rounds + kCaptureRounds > squad_wait) continue;
         float score = g.value(kGoldWeight) / (group_rounds(g, my_dps, d) + heal_rounds(g, my_dps, hp_));
         if (enemy_side(g)) score *= enemy_side_factor(true);
         score *= target_danger(g);
