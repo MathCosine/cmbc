@@ -144,6 +144,8 @@ private:
     float target_danger(Group& g);
     bool enemy_recent(int rounds) const { return round_ - last_enemy_round_ <= rounds; }
     bool calm() const;
+    bool on_my_camp() const;
+    int squad_dist(const Group& g);
     int recent_team_deaths(int window) const;
     bool pressured() const;
     bool enemy_passive() const;
