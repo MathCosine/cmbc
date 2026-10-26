@@ -207,6 +207,30 @@ constexpr bool kInterceptTribute = false;
 // team with them no longer shows six heads to our five: 70/140 against v13, 107 against 105.
 constexpr bool kFairHeads = true;
 constexpr bool kJoinFights = true;
+// v15, from the v14 scrim on 01elk-arena: in the first fight (no items on either side) they dealt
+// 1.76x our damage. 58% of ours went into Heart of Ruin (a tank whose damage grows as he loses
+// health) because we hit the lowest-health enemy in reach, while Cassi (600 health; her death
+// kills Issac too) took little. Smart focus picks the enemy that deals the most per point of
+// health left (Cassi counts double, Heart of Ruin less until nearly dead). And a ranged champion
+// whose target stepped out of range shot nothing while it walked after it (our Vesper Vale dealt
+// 180 in that fight): with another enemy in range, shoot that one instead.
+constexpr bool kSmartFocus = false;
+constexpr bool kNoChase = false;
+// Peel back: their hurt champions fell back behind a teammate and kept fighting (their Heart of
+// Ruin took 1,086 in that fight, their Marcella 100, Issac 0), while ours ran for home alone. A
+// champion that would retreat, unless nearly dead, steps to the tile fewest enemies can reach
+// within kPeelRange of a healthier teammate, and shoots from there if it can.
+constexpr bool kPeelBack = false;
+// Call for help. Champions see only their own surroundings and the team shares 8 bytes, so a
+// teammate fighting 8 tiles away was invisible: in a local replay of 01elk-arena our Ryth fought
+// alone for 9 rounds while two of us collected a reward and one escorted a bag. A champion in a
+// fight says so in its status byte; a healthy teammate within kHelpRange walks over.
+// Out of 140: 81 against v14, 87 against 78 against fishsim (deaths 10.6 against 12.2), 106
+// against 112 against a Cassi & Issac team. With no-chase 77/82/105; with no-chase and peel-back
+// 71/94/104. Smart focus alone 63 against v14, no-chase 73, peel-back 76: those stay off.
+constexpr bool kCallHelp = true;
+constexpr int kHelpRange = 14;
+constexpr int kPeelRange = 3;
 // Altar patrol: with kAltarGuard on, the guard checks the altar for kPatrolStay rounds out of every
 // kPatrolPeriod instead of standing there. Off: with team banking 61/140 against team banking
 // alone; without it 67/140 against v12 and 76 against fishsim (v12 74), farming 2.4% slower.
@@ -820,6 +844,67 @@ bool Bot::guard_altar(bc::champion& me) {
     return true;
 }
 
+float Bot::kill_value(const SeenChamp& e) const {
+    // Damage it deals per point of health it has left: kill what hurts most and dies fastest.
+    float v = std::max(e.dps, 1.f) / std::max(e.hp, 1.f);
+    if (e.type == bc::champion_type::cassi) v *= 2.f;  // her death takes Issac with her
+    if (e.type == bc::champion_type::heart_of_ruin && e.hp > e.max_hp * 0.3f) v *= 0.6f;  // stronger as he bleeds
+    if (e.hp <= strength_ * 1.05f) v *= 4.f;  // dies to our next hit
+    return v;
+}
+
+bool Bot::peel_back(bc::champion& me, const SeenChamp* target) {
+    // A healthier teammate within reach to fall back behind.
+    const SeenChamp* cover = nullptr;
+    for (const auto& a : allies_seen_)
+        if (cheb(a.pos, pos_) <= 6 && a.hp / std::max(a.max_hp, 1.f) > hp_ / std::max(max_hp_, 1.f) + 0.15f &&
+            (!cover || cheb(a.pos, pos_) < cheb(cover->pos, pos_)))
+            cover = &a;
+    if (!cover) return false;
+    auto exposure = [&](vec2 p) {
+        int n = 0;
+        for (const auto& e : enemies_)
+            if (!harmless_on_spawn(e) && cheb(e.pos, p) <= e.reach) ++n;
+        return n;
+    };
+    load_occupancy();
+    vec2 best = pos_;
+    int best_score = exposure(pos_) * 10 + std::max(0, cheb(pos_, cover->pos) - kPeelRange);
+    if (can_move_ && !moved_)
+        for (auto d : kDirs) {
+            const vec2 n = pos_ + d;
+            if (!free_tile(n)) continue;
+            const int score = exposure(n) * 10 + std::max(0, cheb(n, cover->pos) - kPeelRange);
+            if (score < best_score) {
+                best_score = score;
+                best = n;
+            }
+        }
+    if (best != pos_) return try_move(me, best - pos_);
+    // Already as covered as it gets: keep hitting from here.
+    use_combat_spells(me, nullptr, target);
+    if (target && cheb(target->pos, pos_) <= range_) return attack_target(me, target->handle, target->pos, target->hp);
+    return false;
+}
+
+bool Bot::answer_call(bc::champion& me) {
+    // A teammate within kHelpRange is fighting: walk over until we can see the fight ourselves.
+    if (hp_ < max_hp_ * 0.5f || (on_spawn() && hp_ < max_hp_ * 0.95f)) return false;
+    const SeenChamp* caller = nullptr;
+    for (int i = 0; i < slots_ && i < static_cast<int>(allies_.size()); ++i) {
+        if (i == slot_) continue;
+        const auto st = comms_.slot(i);
+        if (st.task != Task::other || st.target != kFight) continue;
+        for (const auto& a : allies_seen_)
+            if (a.handle == allies_[i] && cheb(a.pos, pos_) <= kHelpRange && cheb(a.pos, pos_) > 2 &&
+                (!caller || cheb(a.pos, pos_) < cheb(caller->pos, pos_)))
+                caller = &a;
+    }
+    if (!caller) return false;
+    mark("answer-call");
+    return approach_unit(me, caller->pos, 2);
+}
+
 bool Bot::capturing_here() const {
     if (task_ != Task::capture || target_ < 0) return false;
     for (auto t : world().groups[target_].tiles)
@@ -1008,7 +1093,14 @@ void Bot::act(bc::champion& me) {
     scout_ward(me);
 
     mark("enemies");
-    if (fight_enemies(me)) return;
+    if (fight_enemies(me)) {
+        // Tell the team (retreats already said "home").
+        if (kCallHelp && !capturing_here() && !(comms_.slot(slot_).task == Task::other && comms_.slot(slot_).target == kHome))
+            set_status(Task::other, kFight);
+        return;
+    }
+    mark("help");
+    if (kCallHelp && answer_call(me)) return;
     mark("flee");
     if (flee_camps(me)) return;
     mark("retreat");
@@ -1080,7 +1172,8 @@ void Bot::fire_spells(bool retreating) {
         for (const auto& e : enemies_) {
             if (world().enemy_spawn.get(e.pos) || cheb(e.pos, pos_) > static_cast<int>(sp.range)) continue;
             const bool focused = slots_ <= 5 && enemy_id(e) == comms_.focus();
-            if (!best || focused || (e.hp < best->hp && !(slots_ <= 5 && enemy_id(*best) == comms_.focus()))) best = &e;
+            const bool better = best && (kSmartFocus ? kill_value(e) > kill_value(*best) : e.hp < best->hp);
+            if (!best || focused || (better && !(slots_ <= 5 && enemy_id(*best) == comms_.focus()))) best = &e;
         }
         if (best && spell_ready(i)) cast_on(sp, best->handle);
     }
@@ -1170,7 +1263,9 @@ bool Bot::fight_enemies(bc::champion& me) {
     auto huntable = [&](const SeenChamp& e) { return !world().enemy_spawn.get(e.pos); };
     const SeenChamp* target = nullptr;
     for (const auto& e : enemies_)
-        if (huntable(e) && cheb(e.pos, pos_) <= reach && (!target || e.hp < target->hp)) target = &e;
+        if (huntable(e) && cheb(e.pos, pos_) <= reach &&
+            (!target || (kSmartFocus ? kill_value(e) > kill_value(*target) : e.hp < target->hp)))
+            target = &e;
     // Everyone in reach of the team's chosen enemy hits it; otherwise ours becomes the choice.
     if (slots_ <= 5) {
         for (const auto& e : enemies_)
@@ -1182,7 +1277,14 @@ bool Bot::fight_enemies(bc::champion& me) {
     // nukes and let enemies one-shot us.
     const bool in_danger = hp_ < threat * 2.5f + max_hp_ * 0.1f || (kBurstModel && burst >= hp_ * 0.7f);
 
-    auto strike = [&](const SeenChamp& e) {
+    auto strike = [&](const SeenChamp& want) {
+        // A ranged champion cannot walk and shoot in one turn: with another enemy in range, shoot it
+        // rather than walk after one that stepped out.
+        const SeenChamp* pick = &want;
+        if (kNoChase && ranged_ && cheb(want.pos, pos_) > range_)
+            for (const auto& o : enemies_)
+                if (huntable(o) && cheb(o.pos, pos_) <= range_ && (pick == &want || kill_value(o) > kill_value(*pick))) pick = &o;
+        const SeenChamp& e = *pick;
         bool acted = false;
         if (cheb(e.pos, pos_) > range_) acted = approach_unit(me, e.pos, range_);
         if (cheb(e.pos, pos_) <= range_) {
@@ -1234,6 +1336,10 @@ bool Bot::fight_enemies(bc::champion& me) {
         }
         return false;
     }
+    if (retreating && kPeelBack && hp_ > max_hp_ * 0.15f && peel_back(me, target)) {
+        mark("peel-back");
+        return true;
+    }
     if (retreating) {
         // Shoot first if we cannot get away anyway, then run toward home.
         use_combat_spells(me, nullptr, target);
@@ -1282,7 +1388,8 @@ bool Bot::fight_enemies(bc::champion& me) {
         for (const auto& e : enemies_) {
             if (!huntable(e) || cheb(e.pos, pos_) > kEngageRange) continue;
             const bool focused = slots_ <= 5 && enemy_id(e) == comms_.focus();
-            if (!goal || focused || (e.hp < goal->hp && !(slots_ <= 5 && enemy_id(*goal) == comms_.focus()))) goal = &e;
+            const bool better = goal && (kSmartFocus ? kill_value(e) > kill_value(*goal) : e.hp < goal->hp);
+            if (!goal || focused || (better && !(slots_ <= 5 && enemy_id(*goal) == comms_.focus()))) goal = &e;
         }
         if (goal) {
             bool busy = false;  // a teammate is already on it

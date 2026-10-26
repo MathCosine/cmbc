@@ -15,6 +15,7 @@ enum class Task : std::uint8_t { farm = 0, capture = 1, solo = 2, other = 3 };
 inline constexpr int kTribute = 0;
 inline constexpr int kHome = 1;
 inline constexpr int kDead = 2;
+inline constexpr int kFight = 3;  // in a fight with enemy champions: teammates may come and help
 
 inline constexpr int kMaxSlots = 6;
 inline constexpr int kMaxTarget = 62;

@@ -153,6 +153,9 @@ private:
     bool guard_altar(bc::champion& me);
     bool intercept_tribute(bc::champion& me);
     bool breach_active() const;
+    float kill_value(const SeenChamp& e) const;
+    bool peel_back(bc::champion& me, const SeenChamp* target);
+    bool answer_call(bc::champion& me);
     std::vector<int> nearest_groups() const;
     const SeenCamp* breach_camp() const;
     bool on_spawn() const { return world().ally_spawn.get(pos_); }
