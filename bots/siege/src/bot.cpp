@@ -229,6 +229,10 @@ constexpr bool kPeelBack = false;
 // against 112 against a Cassi & Issac team. With no-chase 77/82/105; with no-chase and peel-back
 // 71/94/104. Smart focus alone 63 against v14, no-chase 73, peel-back 76: those stay off.
 constexpr bool kCallHelp = true;
+// v16: open a walled-in altar however many trips it takes when no altar can be reached.
+constexpr bool kUnlockAnyTrips = false;  // tested: worse (01boss-battle as team A 603 against 1,249 gems by round 1,000)
+// v16: altar recheck (see Bot::altar_open).
+constexpr bool kAltarRecheck = true;
 constexpr int kHelpRange = 14;
 constexpr int kPeelRange = 3;
 // Altar patrol: with kAltarGuard on, the guard checks the altar for kPatrolStay rounds out of every
@@ -247,6 +251,18 @@ constexpr int kEscortBag = 30;      // and carries at least this many gems
 // reached past live camps, the squad kills only the camps on the shortest walk in (see
 // World::plan_breach), and nobody walks to the altar until the way is open.
 constexpr bool kBreach = true;
+// v16 fight tests (v15 scrim against intercontinental fish): kCampWary leaves a contested or
+// enemy-side fighting camp alone while enemy champions are within 10 tiles (our Vendetta was at
+// 40% health from the middle elk on 01elk-arena before the fight began); kEngageFar reacts to
+// enemies within 7 tiles instead of 5 (they waited 6-8 tiles out while we hit the elk); kLeash
+// does not walk after an enemy in its own third of the map (8 of our 54 deaths there).
+// Out of 140 (against v16 without them / a Cassi & Issac team / fishsim): camp wary 76/110/86,
+// leash 72/110/90, both 80/110/82 with the fewest deaths against Cassi & Issac (7.0 against 8.9),
+// farming 2% slower; engage far 56/113/82 (rushing enemies 7 tiles out splits the team): off.
+// Valuing gold at 0.08 instead of 0.15 (gems first): 67/113/85, with the other two 78/106/78: off.
+constexpr bool kCampWary = true;
+constexpr bool kEngageFar = false;
+constexpr bool kLeash = true;
 constexpr int kEngageRange = 5;
 constexpr int kMaxHold = 6;  // turns a ranged champion waits for an enemy before moving on
 
@@ -517,6 +533,7 @@ void Bot::update_groups() {
             if (visible_.get(info.pos)) {
                 any_visible = true;
                 info.alive_known = alive_vis_.get(info.pos);
+                if (info.alive_known) info.seen_alive_round = round_;
                 if (info.alive_known && info.strength > 0) awake |= awake_vis_.get(info.pos);
             }
             if (info.alive_known) {
@@ -905,6 +922,12 @@ bool Bot::answer_call(bc::champion& me) {
     return approach_unit(me, caller->pos, 2);
 }
 
+bool Bot::in_their_third(vec2 p) const {
+    const auto& W = world();
+    const int mine = cheb(p, W.ally_centre), theirs = cheb(p, W.enemy_centre);
+    return theirs * 2 < mine;
+}
+
 bool Bot::capturing_here() const {
     if (task_ != Task::capture || target_ < 0) return false;
     for (auto t : world().groups[target_].tiles)
@@ -970,6 +993,10 @@ void Bot::play_turn() {
     }
     round_ = static_cast<int>(bc::round_number());
     comms_.read();
+    if (const int eb = static_cast<int>(bc::global_submitted_gems(team::enemy)); eb > enemy_banked_) {
+        enemy_banked_ = eb;
+        enemy_banked_round_ = round_;
+    }
     // Team deaths, from slots switching to "dead" in team memory.
     for (int i = 0; i < slots_ && i < kMaxSlots; ++i) {
         const auto st = comms_.slot(i);
@@ -1286,6 +1313,7 @@ bool Bot::fight_enemies(bc::champion& me) {
                 if (huntable(o) && cheb(o.pos, pos_) <= range_ && (pick == &want || kill_value(o) > kill_value(*pick))) pick = &o;
         const SeenChamp& e = *pick;
         bool acted = false;
+        if (kLeash && cheb(e.pos, pos_) > range_ && in_their_third(e.pos)) return false;
         if (cheb(e.pos, pos_) > range_) acted = approach_unit(me, e.pos, range_);
         if (cheb(e.pos, pos_) <= range_) {
             use_combat_spells(me, nullptr, &e);
@@ -1386,7 +1414,7 @@ bool Bot::fight_enemies(bc::champion& me) {
         // Engage rather than keep farming while an enemy walks up and picks the moment.
         const SeenChamp* goal = nullptr;
         for (const auto& e : enemies_) {
-            if (!huntable(e) || cheb(e.pos, pos_) > kEngageRange) continue;
+            if (!huntable(e) || cheb(e.pos, pos_) > (kEngageFar ? 7 : kEngageRange)) continue;
             const bool focused = slots_ <= 5 && enemy_id(e) == comms_.focus();
             const bool better = goal && (kSmartFocus ? kill_value(e) > kill_value(*goal) : e.hp < goal->hp);
             if (!goal || focused || (better && !(slots_ <= 5 && enemy_id(*goal) == comms_.focus()))) goal = &e;
@@ -1541,6 +1569,19 @@ bool Bot::fight_camps(bc::champion& me) {
         }
     const bool weak = hp_ < max_hp_ * 0.4f;
     if (gid >= 0 && weak && !W.groups[gid].harmless) return false;
+    if (kCampWary) {
+        // A fighting camp in contested or enemy ground is not worth our health with enemy
+        // champions about to arrive: leave it until they are dealt with.
+        auto wary = [&](int id) {
+            auto& g = W.groups[id];
+            if (g.harmless || !(enemy_side(g) || g.contested)) return false;
+            for (const auto& e : enemies_)
+                if (!harmless_on_spawn(e) && (cheb(e.pos, g.anchor) <= 10 || cheb(e.pos, pos_) <= 10)) return true;
+            return false;
+        };
+        if (gid >= 0 && wary(gid)) return false;
+        if (gid < 0 && target_ >= 0 && (task_ == Task::farm || task_ == Task::solo) && wary(target_)) return false;
+    }
     if (gid < 0 && (task_ == Task::farm || task_ == Task::solo) && target_ >= 0) {
         const auto& g = W.groups[target_];
         bool near = false;
@@ -2070,6 +2111,18 @@ void Bot::scout_ward(bc::champion& me) {
 }
 
 bool Bot::altar_open(int index) const {
+    if (altar_walls_open(index, false)) return true;
+    // Every altar looks walled in, yet the enemy just banked: one is open and we did not see the
+    // camp die (01boss-battle: they killed the monolith by the only altar at round 876 and banked
+    // seven times while we carried 1,000+ gems). Camps not seen alive lately count as gone, so
+    // we walk over and look.
+    if (!kAltarRecheck || round_ - enemy_banked_round_ > 100) return false;
+    for (int i = 0; i < static_cast<int>(world().altars.size()); ++i)
+        if (altar_walls_open(i, false)) return false;
+    return altar_walls_open(index, true);
+}
+
+bool Bot::altar_walls_open(int index, bool stale_ok) const {
     // Some altars are walled in by camps; they open only once those camps are dead.
     const auto& W = world();
     const vec2 a = W.altars[index];
@@ -2081,7 +2134,7 @@ bool Bot::altar_open(int index) const {
         const auto& g = W.groups[gid];
         bool camp_alive = false;
         for (const auto& c : g.camps)
-            if (c.pos == n) camp_alive = g.alive_by(round_) && c.alive_known;
+            if (c.pos == n) camp_alive = g.alive_by(round_) && c.alive_known && !(stale_ok && round_ - c.seen_alive_round > 30);
         if (!camp_alive) return true;
     }
     return false;
@@ -2471,7 +2524,10 @@ float Bot::siege_rounds(const Group& g, float team_dps, float team_hp, bool unlo
     // A young team besieging a monolith in contested ground loses the early game.
     if (!unlocks && round_ < kSiegeFrom) return -1;
     const float trips = damage / std::max(team_hp * kTripShare, 1.f);
-    if (trips > (unlocks ? kMaxUnlockTrips : kMaxTrips)) return -1;
+    // With every altar walled in, opening one is the only way to score, however many trips it takes
+    // (01boss-battle: the only altar sits behind a 20,000-health monolith; we never started on it
+    // and turned in nothing all game while the other team banked from round 885).
+    if (trips > (unlocks ? (kUnlockAnyTrips ? 1e9f : kMaxUnlockTrips) : kMaxTrips)) return -1;
     auto& W = world();
     const int home = W.dist(W.spawn_poi, g.anchor, 20000);
     if (home == kUnreached) return -1;
