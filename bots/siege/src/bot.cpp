@@ -46,9 +46,15 @@ constexpr float kHealCost = 1.0f;
 constexpr int kCarryGems = 40;
 // Planning assumes this share of the paper damage: travel, retreats and stragglers
 // halve what a squad really deals (a golem group forecast at 19 rounds took 70).
-constexpr float kFightEfficiency = 0.6f;
+// Rough share of the team's damage that lands while fighting camps. 0.6 made big camps near our
+// spawn look like sieges early (v11: 0.8; with the loop and siege changes below, the ladder
+// scrim against intercontinental fish turned in 30% more gems than v9, 717 against 443 on
+// 01big-world where nobody fought).
+constexpr float kFightEfficiency = 0.8f;
 constexpr int kRewardTimeout = 8;  // rounds a reward out of sight is assumed to stay uncaptured
 constexpr std::uint64_t kPlanFuel = 45000;  // fuel needed before optional planning work
+constexpr std::uint64_t kSetupFuel = 60000;  // left after building the map to finish setup this turn
+constexpr std::uint64_t kActFuel = 50000;    // left after setup to act this turn
 
 // Staying alive. Most deaths come from enemy champions, mostly alone, and every one costs
 // 60 rounds out plus the walk back. Each switch was tested on its own against seven local
@@ -99,6 +105,148 @@ constexpr bool kStandAndFight = true;
 // enemies than allies within kCrowdRange, do not engage, and leave once they come close.
 constexpr bool kAvoidOutnumbered = true;
 constexpr int kCrowdRange = 6;
+// Fights near camps: camps hit the nearest champion, and an enemy can wake one and leave us
+// nearest. Retreats step out of awake camps' reach too, and a ranged champion does not hold
+// its ground while a camp is hitting it (camp deaths rose to 1.2 a game with v3).
+constexpr bool kCampAwareFights = true;
+// Rounds a squad waits at its target for teammates before giving it up for another. On maps
+// with long walks between targets (corridors) 20 rounds sent the squad back and forth.
+constexpr int kStallRounds = 60;
+// Safe opening. Games are decided early: our first death came at round 453 (median) in wins and
+// round 58 in losses. In small-map losses 60% of our deaths before round 250 were at contested
+// camps and 25% on the enemy side, while the teams beating us farmed their own half first.
+// Until kOpeningRounds, contested and enemy-side camps are taken only when nothing else is left.
+constexpr bool kSafeOpening = true;
+constexpr int kOpeningRounds = 250;
+// Soft opening (v12): contested camps count at kOpeningContested of their score in the opening
+// instead of only as a fallback; enemy-side camps stay out.
+constexpr bool kSoftOpening = true;
+constexpr float kOpeningContested = 0.35f;
+// Scout wards. Ladder teams re-place their ward about every 12 rounds (a quarter of the time in a
+// bush) and land the first hit in more fights; ours sat at old capture spots (every 68 rounds,
+// 1% in bushes). Whenever the ward is ready and we have moved on, re-place it within 2 tiles,
+// in a bush if there is one, else toward the enemy.
+constexpr bool kScoutWards = true;
+constexpr int kScoutWardMove = 5;  // re-place once we are this far from our ward
+// Early warning. Outnumbered fights became the biggest loss (76 of 169 deaths in 10 v6 games),
+// mostly one of ours caught by 2-3 enemies after round 300, while enemies 8-10 tiles out were
+// ignored. A group that outnumbers us at that range sends us toward a teammate, or away.
+// Off: about 20 fewer wins out of 560 against the sparring bots in both combinations tested.
+constexpr bool kEarlyWarning = false;
+// Capture guard. A capture needs the region held uncontested for 5 rounds and an enemy stepping
+// on it only resets the timer, but our capturer used to walk off to fight and the enemy took
+// the reward (30 rewards, 500 gems, in 10 v6 games). Hold the tile and fight from it unless in
+// danger or the fight is clearly lost (outnumbered, or out-damaged); holding even when
+// outnumbered by one cost deaths locally.
+constexpr bool kHoldCapture = true;
+// Marcella banks. In a lost v7 game the other team's Marcella collected 514 of their 813 camp
+// gems from camps her teammates had cleared and turned them in in small bags (Marcella gains 2
+// gold per gem turned in): 5,161 gold against our Marcella's 750, who turned in nothing.
+// Teammates leave gem rewards to our Marcella when she is free and within kBankerReach, and
+// move on to the next camp; she claims gem rewards from further out and banks at kBankerCarry.
+// Locally her share of our gems went from 23% to 48% and her gold by round 600 from 530 to
+// 1,319: 457 against 434 wins out of 560, 46/80 against v7 and v6, though farming with no
+// enemy around is 7% slower (more walking to rewards and the altar).
+constexpr bool kMarcellaBank = false;
+constexpr int kBankerReach = 8;
+constexpr int kBankerClaim = 14;
+constexpr int kBankerCarry = 20;
+// Solo camps. The squad takes one camp at a time, and in that game never cleared the wolf
+// nearest our spawn (the other team cleared theirs 11 times). One champion may take a
+// fighting camp on our side alone when the forecast says it costs under kSoloShare of its health.
+// Off: it fixed that (the nearest wolf on 00collision 0 to 5 clears a game) and farmed 1%
+// faster, but lost head to head: 38/80 against v7, and 36/80 with the banker against the banker.
+constexpr bool kSoloCamps = false;
+constexpr float kSoloShare = 0.45f;
+// Safe altar trips. 4 of 9 deaths in that game came at the only altar, with 66- and 59-gem
+// bags, and gems lost on death go to the killer. Do not walk up to an altar with enemies around
+// it unless we outnumber them, and do not stand alone hitting an enemy lock with enemies near:
+// farm for kAltarWait rounds and come back.
+// Off: a little behind in every combination tested (38/80 against v7 alone, 36/80 against the
+// banker with it).
+constexpr bool kSafeAltar = false;
+constexpr int kAltarWait = 20;
+// Bank escort. Our deaths at the centre altar were all one champion turning in alone, with the
+// enemy arriving mid-trip. When a teammate walks to an altar in the middle (or on the enemy
+// side), the nearest free teammate within kEscortRange goes along (two for an enemy-side altar),
+// for the last kEscortStretch tiles of a kEscortBag+ trip; the banker waits up to 8 rounds for it.
+// Escorting every trip took up to 28% of rounds. Locally even with the banker alone (455 against
+// 457 of 560, 49/80 against v7, 38/80 against the banker alone, farming 2% slower): the sparring
+// bots rarely hunt at the altar, so this is on for a ladder test.
+constexpr bool kBankEscort = true;
+// Loop and siege (v11). Squad targets may be waited for up to kRespawnWait rounds, and a camp
+// the team can clear while losing under kSiegeShare of its health is not a siege (0.55 kept the
+// 41-gem camp beside our spawn on 01big-world off limits until round 270; the other team took
+// it at round 35 and every 85 rounds after).
+constexpr int kRespawnWait = 100;
+constexpr float kSiegeShare = 0.85f;
+// Altar danger (v11). With a bag worth guarding, prefer an altar the enemy is not holding: on
+// 00corners five of us died with 48-85 gems at the middle altar their team banks at, while
+// the corner altars were free.
+constexpr bool kAltarDanger = true;
+// Side jobs (v12): while the squad's target respawns for more than kWaitJobMin rounds, any of us
+// may clear a nearby camp alone (gold and gem clusters, and fighting camps on our side that cost
+// under kSoloShare of our health), if it can be back before the respawn.
+constexpr bool kWaitJobs = true;
+// Ideas from the v12 scrim on adgato-gemcombat1 (their three met each of ours at the middle
+// altar alone): team banking (bigger escorts for altar trips in the middle), an altar guard (our
+// tank waits beside a middle altar between jobs) and intercepting enemy tributes (an enemy
+// channelling cannot move, and its bag goes to whoever kills it).
+// Tested on all 70 maps (out of 140 against v12, and against fishsim where v12 wins 74):
+// team banking 64 and 77, the only one to win adgato-gemcombat1 against fishsim twice, farming
+// 4% slower: on for a ladder test. Altar guard 61 and 67, intercepting 66 and 76, all three 54
+// and 62: off.
+constexpr bool kTeamBank = true;
+constexpr bool kAltarGuard = false;
+constexpr bool kInterceptTribute = false;
+// v14, from the v13 scrim on 01elk-arena (0-1,008, 53 deaths to 1): in the first fight all six of
+// theirs hit ours while our Vesper Vale kept hitting the elk and Tavi waited for range. Join a
+// fight a teammate is in (an enemy within 7 tiles attacking one of us) instead of farming or
+// holding: 76/140 against v13, 115 against 105 of 140 against a Cassi & Issac team, 78 against 77
+// against fishsim, fewer deaths. Cassi and Issac (one pick, one life) count half a head each, so a
+// team with them no longer shows six heads to our five: 70/140 against v13, 107 against 105.
+constexpr bool kFairHeads = true;
+constexpr bool kJoinFights = true;
+// v15, from the v14 scrim on 01elk-arena: in the first fight (no items on either side) they dealt
+// 1.76x our damage. 58% of ours went into Heart of Ruin (a tank whose damage grows as he loses
+// health) because we hit the lowest-health enemy in reach, while Cassi (600 health; her death
+// kills Issac too) took little. Smart focus picks the enemy that deals the most per point of
+// health left (Cassi counts double, Heart of Ruin less until nearly dead). And a ranged champion
+// whose target stepped out of range shot nothing while it walked after it (our Vesper Vale dealt
+// 180 in that fight): with another enemy in range, shoot that one instead.
+constexpr bool kSmartFocus = false;
+constexpr bool kNoChase = false;
+// Peel back: their hurt champions fell back behind a teammate and kept fighting (their Heart of
+// Ruin took 1,086 in that fight, their Marcella 100, Issac 0), while ours ran for home alone. A
+// champion that would retreat, unless nearly dead, steps to the tile fewest enemies can reach
+// within kPeelRange of a healthier teammate, and shoots from there if it can.
+constexpr bool kPeelBack = false;
+// Call for help. Champions see only their own surroundings and the team shares 8 bytes, so a
+// teammate fighting 8 tiles away was invisible: in a local replay of 01elk-arena our Ryth fought
+// alone for 9 rounds while two of us collected a reward and one escorted a bag. A champion in a
+// fight says so in its status byte; a healthy teammate within kHelpRange walks over.
+// Out of 140: 81 against v14, 87 against 78 against fishsim (deaths 10.6 against 12.2), 106
+// against 112 against a Cassi & Issac team. With no-chase 77/82/105; with no-chase and peel-back
+// 71/94/104. Smart focus alone 63 against v14, no-chase 73, peel-back 76: those stay off.
+constexpr bool kCallHelp = true;
+constexpr int kHelpRange = 14;
+constexpr int kPeelRange = 3;
+// Altar patrol: with kAltarGuard on, the guard checks the altar for kPatrolStay rounds out of every
+// kPatrolPeriod instead of standing there. Off: with team banking 61/140 against team banking
+// alone; without it 67/140 against v12 and 76 against fishsim (v12 74), farming 2.4% slower.
+constexpr bool kAltarPatrol = false;
+constexpr int kPatrolPeriod = 50;
+constexpr int kPatrolStay = 12;
+constexpr int kInterceptRange = 10;
+constexpr int kWaitJobMin = 20;
+constexpr int kEscortRange = 12;
+constexpr int kEscortStretch = 10;  // the banker is this close to the altar
+constexpr int kEscortBag = 30;      // and carries at least this many gems
+// Breach. On 02the-pack the only altar sits inside a ring of 48 wolves: our siege rules never
+// took the ring on, and neither side turned in a gem in 2,000 rounds. When no altar can be
+// reached past live camps, the squad kills only the camps on the shortest walk in (see
+// World::plan_breach), and nobody walks to the altar until the way is open.
+constexpr bool kBreach = true;
 constexpr int kEngageRange = 5;
 constexpr int kMaxHold = 6;  // turns a ranged champion waits for an enemy before moving on
 
@@ -235,8 +383,19 @@ float Bot::design_dps(const bc::champion& c, float strength, float focus) const 
 void Bot::init(bc::champion& me) {
     auto& W = world();
     mark("init-world");
-    if (!W.ready) W.init();
+    if (!W.ready) {
+        W.init();
+        // On big maps building the map takes most of the first turn's fuel: finish setting up
+        // next turn rather than run out of fuel halfway (which loses the turn anyway).
+        if (bc::fuel_remaining() < kSetupFuel) return;
+    }
     mark("init-allies");
+    // Safe to run again if a turn ran out of fuel in here.
+    ally_dps_.clear();
+    ally_hp_.clear();
+    ally_types_.clear();
+    spells_.clear();
+    banker_slot_ = -1;
     type_ = me.champion_name();
     const auto stats = me.base_stats();
     range_ = stats.base_attack_range;
@@ -247,6 +406,8 @@ void Bot::init(bc::champion& me) {
     for (int i = 0; i < static_cast<int>(allies_.size()); ++i) {
         if (allies_[i] == me) slot_ = i;
         const auto t = allies_[i].champion_name();
+        if (t == bc::champion_type::marcella && banker_slot_ < 0) banker_slot_ = i;
+        ally_types_.push_back(t);
         bc::champion design{t};
         const auto s = design.base_stats();
         ally_dps_.push_back(dps_of(t, s.base_strength, s.base_focus));
@@ -269,10 +430,10 @@ void Bot::init(bc::champion& me) {
         spells_.push_back(spell);
     }
     my_design_dps_ = dps_of(type_, stats.base_strength, stats.base_focus);
+    ready_ = true;
     // The first turn has double fuel: precompute the trip home and the nearest targets.
     mark("init-precompute");
     W.precompute(110000);
-    ready_ = true;
 }
 
 void Bot::observe(bc::champion& me) {
@@ -307,6 +468,7 @@ void Bot::observe(bc::champion& me) {
     auto seen = [&](const bc::champion& c, bool enemy) {
         const auto t = c.champion_name();
         SeenChamp s{c, c.position(), c.health(), c.max_health(), 0, model_for(t).range, 0};
+        s.type = t;
         auto& cached = dps_cache_[static_cast<std::uint32_t>(static_cast<bc::handle_champion_t>(c)) & 31];
         const int refresh = kBurstModel && enemy ? 5 : 25;
         if (cached.round < 0 || round_ - cached.round > refresh) {
@@ -443,6 +605,16 @@ float Bot::danger_factor(vec2 p) const {
     return f;
 }
 
+bool Bot::opening_blocks(Group& g, bool allow_contested) {
+    // During the opening: contested camps only as a fallback, camps on the enemy side never.
+    // The first v5 games showed why: with our side farmed out, falling back to any camp sent
+    // the squad next to the enemy spawn (42% of early deaths there, against 19% before).
+    if (!kSafeOpening || round_ >= kOpeningRounds) return false;
+    const bool theirs = enemy_side(g);  // also works out g.contested
+    if (g.contested) return !allow_contested;
+    return theirs;
+}
+
 float Bot::target_danger(Group& g) {
     // Our own half is where we have to farm: recent danger there only halves the score.
     const bool theirs = enemy_side(g);
@@ -463,6 +635,7 @@ bool Bot::enemy_passive() const { return round_ > 300 && !enemy_recent(250) && r
 
 int Bot::carry_gems() const {
     if (pressured()) return kSmallBag;
+    if (kMarcellaBank && type_ == bc::champion_type::marcella) return kBankerCarry;
     return kSmallBags ? kSmallCarry : kCarryGems;
 }
 
@@ -473,6 +646,302 @@ float Bot::enemy_side_factor(bool solo) const {
     if (!kShunEnemySide) return solo ? 0.6f : 0.7f;
     if (enemy_passive()) return solo ? 0.7f : 0.8f;
     return solo ? 0.35f : 0.45f;
+}
+
+bool Bot::banker_free_near(vec2 p, int range, int group) const {
+    // Our Marcella, alive and in sight within range of p, and not busy banking, going home or
+    // collecting another reward.
+    if (!kMarcellaBank || banker_slot_ < 0 || banker_slot_ == slot_ || banker_slot_ >= slots_) return false;
+    if (slot_dead_[banker_slot_]) return false;
+    const auto st = comms_.slot(banker_slot_);
+    if (st.task == Task::other || (st.task == Task::capture && st.target != group)) return false;
+    for (const auto& a : allies_seen_)
+        if (a.handle == allies_[banker_slot_]) return cheb(a.pos, p) <= range;
+    return false;
+}
+
+bool Bot::solo_camp_ok(Group& g, float dps) {
+    // A fighting camp on our side, away from the middle, that we clear alone and stay healthy.
+    if (enemy_side(g) || g.contested) return false;
+    return forecast(g, dps).damage <= hp_ * kSoloShare;
+}
+
+bool Bot::altar_guarded(vec2 altar) const {
+    // Enemies around the altar (or on us) and no more of us than of them close by.
+    int theirs = 0, ours = 1;
+    for (const auto& e : enemies_)
+        if (!harmless_on_spawn(e) && (cheb(e.pos, altar) <= 6 || cheb(e.pos, pos_) <= 4)) ++theirs;
+    if (theirs == 0) return false;
+    for (const auto& a : allies_seen_)
+        if (cheb(a.pos, pos_) <= kCrowdRange) ++ours;
+    return ours <= theirs;
+}
+
+int Bot::altar_exposure(vec2 altar) const {
+    // 0: our side, 1: the middle, 2: the enemy side.
+    const auto& W = world();
+    const int mine = cheb(altar, W.ally_centre), theirs = cheb(altar, W.enemy_centre);
+    if (theirs < mine - std::max(4, (mine + theirs) / 10)) return 2;
+    if (theirs <= mine + std::max(4, (mine + theirs) / 10)) return 1;
+    return 0;
+}
+
+bool Bot::escort_banker(bc::champion& me) {
+    // Walk with a teammate who is taking gems to an altar in the middle or on the enemy side,
+    // when we are the nearest free teammate (the two nearest for the enemy side).
+    if (task_ == Task::capture || hp_ < max_hp_ * 0.5f || on_spawn()) return false;
+    const auto& W = world();
+    for (int i = 0; i < slots_; ++i) {
+        if (i == slot_) continue;
+        const auto st = comms_.slot(i);
+        if (st.task != Task::other || st.target != kTribute) continue;
+        const SeenChamp* banker = nullptr;
+        for (const auto& a : allies_seen_)
+            if (a.handle == allies_[i]) banker = &a;
+        if (!banker || cheb(banker->pos, pos_) > kEscortRange || W.ally_spawn.get(banker->pos)) continue;
+        // The altar it is heading for: the nearest one to it. Escort only the last stretch, and
+        // only a bag worth guarding.
+        vec2 altar = banker->pos;
+        int best = 1 << 20;
+        for (auto a : W.altars)
+            if (cheb(a, banker->pos) < best) {
+                best = cheb(a, banker->pos);
+                altar = a;
+            }
+        if (best > (kTeamBank ? kEscortStretch + 4 : kEscortStretch)) continue;
+        const int exposure = altar_exposure(altar);
+        if (exposure == 0) continue;
+        int bag = 0;
+        try {
+            bag = static_cast<int>(banker->handle.gem_count());
+        } catch (const std::exception&) {
+            continue;
+        }
+        if (bag < (kTeamBank ? kEscortBag / 2 : kEscortBag)) continue;
+        // Escorts needed, and how many free teammates are closer to the banker than we are.
+        const int needed = exposure + (kTeamBank ? 1 : 0);
+        const int mine = cheb(banker->pos, pos_);
+        int closer = 0;
+        for (int j = 0; j < slots_; ++j) {
+            if (j == slot_ || j == i) continue;
+            const auto sj = comms_.slot(j);
+            if (sj.task != Task::farm && sj.task != Task::solo) continue;
+            for (const auto& a : allies_seen_)
+                if (a.handle == allies_[j]) {
+                    const int d = cheb(banker->pos, a.pos);
+                    if (d < mine || (d == mine && j < slot_)) ++closer;
+                }
+        }
+        if (closer >= needed) continue;
+        mark("escort-bank");
+        if (mine > 2) approach_unit(me, banker->pos, 2);
+        return true;
+    }
+    return false;
+}
+
+bool Bot::breach_active() const {
+    auto& W = world();
+    if (!kBreach || W.breach.empty()) return false;
+    for (auto t : W.breach)
+        if (const auto* c = W.camp_info_at(t); c && c->alive_known) return true;
+    return false;
+}
+
+const SeenCamp* Bot::breach_camp() const {
+    // The outermost breach camp still standing, if we can see it.
+    auto& W = world();
+    for (auto t : W.breach) {
+        const auto* info = W.camp_info_at(t);
+        if (!info || !info->alive_known) continue;
+        for (const auto& c : camps_)
+            if (c.pos == t) return &c;
+        return nullptr;
+    }
+    return nullptr;
+}
+
+std::vector<int> Bot::nearest_groups() const {
+    const auto& W = world();
+    std::vector<int> order(W.groups.size());
+    for (std::size_t i = 0; i < order.size(); ++i) order[i] = static_cast<int>(i);
+    std::sort(order.begin(), order.end(), [&](int a, int b) { return cheb(W.groups[a].anchor, pos_) < cheb(W.groups[b].anchor, pos_); });
+    return order;
+}
+
+int Bot::altar_danger(vec2 altar) const {
+    // Extra tiles a big bag should walk to avoid an altar enemies were seen at (or we died at)
+    // lately, more in the middle and on the enemy side; free altars cost nothing extra.
+    bool held = round_ - death_round_ <= 150 && cheb(death_pos_, altar) <= 8;
+    for (const auto& s : sightings_)
+        if (round_ - s.round <= 60 && cheb(s.pos, altar) <= 8) held = true;
+    return held ? 30 + 8 * altar_exposure(altar) : 0;
+}
+
+bool Bot::intercept_tribute(bc::champion& me) {
+    // An enemy channelling a tribute cannot move and drops its bag to whoever kills it: go for it
+    // unless its friends there outnumber us.
+    if (hp_ < max_hp_ * 0.5f || task_ == Task::capture) return false;
+    const SeenChamp* best = nullptr;
+    for (const auto& e : enemies_) {
+        if (harmless_on_spawn(e) || cheb(e.pos, pos_) > kInterceptRange) continue;
+        bool channelling = false;
+        try {
+            channelling = e.handle.is_submitting_gems();
+        } catch (const std::exception&) {
+        }
+        if (channelling && (!best || cheb(e.pos, pos_) < cheb(best->pos, pos_))) best = &e;
+    }
+    if (!best) return false;
+    int theirs = 0, ours = 1;
+    for (const auto& e : enemies_)
+        if (!harmless_on_spawn(e) && cheb(e.pos, best->pos) <= 4) ++theirs;
+    for (const auto& a : allies_seen_)
+        if (cheb(a.pos, best->pos) <= cheb(pos_, best->pos) + 2) ++ours;
+    if (theirs > ours) return false;
+    mark("intercept");
+    if (cheb(best->pos, pos_) <= range_) {
+        use_combat_spells(me, nullptr, best);
+        attack_target(me, best->handle, best->pos, best->hp);
+    } else {
+        fire_spells(false);
+        approach_unit(me, best->pos, range_);
+    }
+    return true;
+}
+
+bool Bot::guard_altar(bc::champion& me) {
+    // On maps whose altar nearest our spawn sits in the middle, one of us waits beside it between
+    // jobs: enemies turning in there meet a defender (and our lock cancels their tribute), and our
+    // own trips to it are not alone.
+    if (task_ == Task::capture || hp_ < max_hp_ * 0.6f || on_spawn() || gems_ >= carry_gems()) return false;
+    // Patrol: only kPatrolStay rounds out of every kPatrolPeriod, farming the rest.
+    if (kAltarPatrol && round_ % kPatrolPeriod >= kPatrolStay) return false;
+    const auto& W = world();
+    vec2 altar{-1, -1};
+    int best = 1 << 20;
+    for (auto a : W.altars)
+        if (cheb(a, W.ally_centre) < best) {
+            best = cheb(a, W.ally_centre);
+            altar = a;
+        }
+    if (altar.x < 0 || altar_exposure(altar) == 0 || slots_ < 3) return false;
+    // The guard: the first living champion in this order (tanks first).
+    static constexpr std::array kGuardOrder{bc::champion_type::ryth, bc::champion_type::marcella, bc::champion_type::vendetta,
+                                            bc::champion_type::tavi, bc::champion_type::vesper_vale};
+    int guard = -1;
+    for (auto t : kGuardOrder) {
+        for (int i = 0; i < slots_ && i < static_cast<int>(ally_types_.size()); ++i)
+            if (ally_types_[i] == t && !slot_dead_[i] && !(comms_.slot(i).task == Task::other && comms_.slot(i).target == kHome)) {
+                guard = i;
+                break;
+            }
+        if (guard >= 0) break;
+    }
+    if (guard != slot_) return false;
+    mark("guard-altar");
+    if (cheb(pos_, altar) > 3) approach_unit(me, altar, 2);
+    return true;
+}
+
+float Bot::kill_value(const SeenChamp& e) const {
+    // Damage it deals per point of health it has left: kill what hurts most and dies fastest.
+    float v = std::max(e.dps, 1.f) / std::max(e.hp, 1.f);
+    if (e.type == bc::champion_type::cassi) v *= 2.f;  // her death takes Issac with her
+    if (e.type == bc::champion_type::heart_of_ruin && e.hp > e.max_hp * 0.3f) v *= 0.6f;  // stronger as he bleeds
+    if (e.hp <= strength_ * 1.05f) v *= 4.f;  // dies to our next hit
+    return v;
+}
+
+bool Bot::peel_back(bc::champion& me, const SeenChamp* target) {
+    // A healthier teammate within reach to fall back behind.
+    const SeenChamp* cover = nullptr;
+    for (const auto& a : allies_seen_)
+        if (cheb(a.pos, pos_) <= 6 && a.hp / std::max(a.max_hp, 1.f) > hp_ / std::max(max_hp_, 1.f) + 0.15f &&
+            (!cover || cheb(a.pos, pos_) < cheb(cover->pos, pos_)))
+            cover = &a;
+    if (!cover) return false;
+    auto exposure = [&](vec2 p) {
+        int n = 0;
+        for (const auto& e : enemies_)
+            if (!harmless_on_spawn(e) && cheb(e.pos, p) <= e.reach) ++n;
+        return n;
+    };
+    load_occupancy();
+    vec2 best = pos_;
+    int best_score = exposure(pos_) * 10 + std::max(0, cheb(pos_, cover->pos) - kPeelRange);
+    if (can_move_ && !moved_)
+        for (auto d : kDirs) {
+            const vec2 n = pos_ + d;
+            if (!free_tile(n)) continue;
+            const int score = exposure(n) * 10 + std::max(0, cheb(n, cover->pos) - kPeelRange);
+            if (score < best_score) {
+                best_score = score;
+                best = n;
+            }
+        }
+    if (best != pos_) return try_move(me, best - pos_);
+    // Already as covered as it gets: keep hitting from here.
+    use_combat_spells(me, nullptr, target);
+    if (target && cheb(target->pos, pos_) <= range_) return attack_target(me, target->handle, target->pos, target->hp);
+    return false;
+}
+
+bool Bot::answer_call(bc::champion& me) {
+    // A teammate within kHelpRange is fighting: walk over until we can see the fight ourselves.
+    if (hp_ < max_hp_ * 0.5f || (on_spawn() && hp_ < max_hp_ * 0.95f)) return false;
+    const SeenChamp* caller = nullptr;
+    for (int i = 0; i < slots_ && i < static_cast<int>(allies_.size()); ++i) {
+        if (i == slot_) continue;
+        const auto st = comms_.slot(i);
+        if (st.task != Task::other || st.target != kFight) continue;
+        for (const auto& a : allies_seen_)
+            if (a.handle == allies_[i] && cheb(a.pos, pos_) <= kHelpRange && cheb(a.pos, pos_) > 2 &&
+                (!caller || cheb(a.pos, pos_) < cheb(caller->pos, pos_)))
+                caller = &a;
+    }
+    if (!caller) return false;
+    mark("answer-call");
+    return approach_unit(me, caller->pos, 2);
+}
+
+bool Bot::capturing_here() const {
+    if (task_ != Task::capture || target_ < 0) return false;
+    for (auto t : world().groups[target_].tiles)
+        if (t == pos_) return true;
+    return false;
+}
+
+bool Bot::early_warning(bc::champion& me) {
+    if (on_spawn() || capturing_here()) return false;
+    int coming = 0;
+    vec2 sum{0, 0};
+    for (const auto& e : enemies_)
+        if (!harmless_on_spawn(e) && cheb(e.pos, pos_) <= 10) {
+            ++coming;
+            sum += e.pos;
+        }
+    int with_us = 1;
+    for (const auto& a : allies_seen_)
+        if (cheb(a.pos, pos_) <= kCrowdRange) ++with_us;
+    if (coming <= with_us) return false;
+    // Join the nearest teammate we are not already beside, unless it is closer to them than we are.
+    const vec2 centre = sum / coming;
+    const SeenChamp* mate = nullptr;
+    int best = 1000;
+    for (const auto& a : allies_seen_) {
+        const int d = cheb(a.pos, pos_);
+        if (d > 3 && d < best && cheb(a.pos, centre) >= cheb(pos_, centre) - 1) {
+            best = d;
+            mate = &a;
+        }
+    }
+    mark("early-warning");
+    if (mate && approach_unit(me, mate->pos, 2)) return true;
+    std::vector<std::pair<vec2, int>> threats;
+    for (const auto& e : enemies_)
+        if (!harmless_on_spawn(e)) threats.push_back({e.pos, e.range + 4});
+    return step_away(me, threats);
 }
 
 bool Bot::wait_for_escort() {
@@ -493,7 +962,12 @@ bool Bot::wait_for_escort() {
 void Bot::play_turn() {
     auto& me = bc::self();
     debug_block({ g_marks.clear(); g_marks.push_back({"start", bc::fuel_remaining()}); });
-    if (!ready_) init(me);
+    if (!ready_) {
+        init(me);
+        // Setup used most of this turn's fuel: start acting next turn instead of running out
+        // of fuel halfway through planning.
+        if (!ready_ || bc::fuel_remaining() < kActFuel) return;
+    }
     round_ = static_cast<int>(bc::round_number());
     comms_.read();
     // Team deaths, from slots switching to "dead" in team memory.
@@ -616,9 +1090,17 @@ void Bot::act(bc::champion& me) {
     if (at_spawn || type_ == bc::champion_type::tavi) shop(me, at_spawn);
     mark("locks");
     place_lock(me);
+    scout_ward(me);
 
     mark("enemies");
-    if (fight_enemies(me)) return;
+    if (fight_enemies(me)) {
+        // Tell the team (retreats already said "home").
+        if (kCallHelp && !capturing_here() && !(comms_.slot(slot_).task == Task::other && comms_.slot(slot_).target == kHome))
+            set_status(Task::other, kFight);
+        return;
+    }
+    mark("help");
+    if (kCallHelp && answer_call(me)) return;
     mark("flee");
     if (flee_camps(me)) return;
     mark("retreat");
@@ -648,11 +1130,15 @@ void Bot::act(bc::champion& me) {
     if (tribute(me)) return;
     mark("capture");
     if (capture(me)) return;
+    mark("escort-bank");
+    if (kBankEscort && escort_banker(me)) return;
+    mark("guard-altar");
+    if (kAltarGuard && guard_altar(me)) return;
     mark("farm");
     if (farm(me)) return;
     mark("idle");
     // Nothing to farm: bank whatever we carry.
-    if (gems_ > 0) {
+    if (gems_ > 0 && !breach_active()) {
         int d = 0;
         const int a = best_altar(d);
         if (a >= 0 && d != kUnreached) {
@@ -686,7 +1172,8 @@ void Bot::fire_spells(bool retreating) {
         for (const auto& e : enemies_) {
             if (world().enemy_spawn.get(e.pos) || cheb(e.pos, pos_) > static_cast<int>(sp.range)) continue;
             const bool focused = slots_ <= 5 && enemy_id(e) == comms_.focus();
-            if (!best || focused || (e.hp < best->hp && !(slots_ <= 5 && enemy_id(*best) == comms_.focus()))) best = &e;
+            const bool better = best && (kSmartFocus ? kill_value(e) > kill_value(*best) : e.hp < best->hp);
+            if (!best || focused || (better && !(slots_ <= 5 && enemy_id(*best) == comms_.focus()))) best = &e;
         }
         if (best && spell_ready(i)) cast_on(sp, best->handle);
     }
@@ -732,12 +1219,19 @@ bool Bot::fight_enemies(bc::champion& me) {
             nearest = &e;
         }
     }
-    if (!nearest || nearest_d > (kBurstModel ? 10 : 7)) return false;
-    int their_heads = 0, our_heads = 1;
+    if (!nearest) return false;
+    if (kInterceptTribute && intercept_tribute(me)) return true;
+    if (nearest_d > (kBurstModel ? 10 : 7)) return kEarlyWarning && nearest_d <= 10 && early_warning(me);
+    // Cassi and Issac are one pick and one life in two bodies: with kFairHeads they count half each.
+    // Otherwise a team with them showed six heads to our five and our champions held back.
+    auto head = [](const SeenChamp& c) {
+        return kFairHeads && (c.type == bc::champion_type::cassi || c.type == bc::champion_type::issac) ? 0.5f : 1.f;
+    };
+    float their_heads = 0, our_heads = 1;
     for (const auto& e : enemies_)
-        if (!harmless_on_spawn(e) && cheb(e.pos, pos_) <= kCrowdRange) ++their_heads;
+        if (!harmless_on_spawn(e) && cheb(e.pos, pos_) <= kCrowdRange) their_heads += head(e);
     for (const auto& a : allies_seen_)
-        if (cheb(a.pos, pos_) <= kCrowdRange) ++our_heads;
+        if (cheb(a.pos, pos_) <= kCrowdRange) our_heads += head(a);
     const bool outnumbered = kStandAndFight && kAvoidOutnumbered && their_heads > our_heads;
 
     // Rounds for each side to wipe the other if everyone nearby commits.
@@ -752,6 +1246,9 @@ bool Bot::fight_enemies(bc::champion& me) {
         if (!kBurstModel) threats.push_back({e.pos, e.range + 1});
         else if (!harmless_on_spawn(e)) threats.push_back({e.pos, e.reach + 1});
     }
+    if (kCampAwareFights)
+        for (const auto& c : camps_)
+            if (c.awake && c.strength > 0) threats.push_back({c.pos, c.range});
     if (nearest_d > 7) {
         // A group coming our way that we cannot fight: leave before it arrives rather than
         // finishing a camp and getting caught.
@@ -766,7 +1263,9 @@ bool Bot::fight_enemies(bc::champion& me) {
     auto huntable = [&](const SeenChamp& e) { return !world().enemy_spawn.get(e.pos); };
     const SeenChamp* target = nullptr;
     for (const auto& e : enemies_)
-        if (huntable(e) && cheb(e.pos, pos_) <= reach && (!target || e.hp < target->hp)) target = &e;
+        if (huntable(e) && cheb(e.pos, pos_) <= reach &&
+            (!target || (kSmartFocus ? kill_value(e) > kill_value(*target) : e.hp < target->hp)))
+            target = &e;
     // Everyone in reach of the team's chosen enemy hits it; otherwise ours becomes the choice.
     if (slots_ <= 5) {
         for (const auto& e : enemies_)
@@ -778,7 +1277,14 @@ bool Bot::fight_enemies(bc::champion& me) {
     // nukes and let enemies one-shot us.
     const bool in_danger = hp_ < threat * 2.5f + max_hp_ * 0.1f || (kBurstModel && burst >= hp_ * 0.7f);
 
-    auto strike = [&](const SeenChamp& e) {
+    auto strike = [&](const SeenChamp& want) {
+        // A ranged champion cannot walk and shoot in one turn: with another enemy in range, shoot it
+        // rather than walk after one that stepped out.
+        const SeenChamp* pick = &want;
+        if (kNoChase && ranged_ && cheb(want.pos, pos_) > range_)
+            for (const auto& o : enemies_)
+                if (huntable(o) && cheb(o.pos, pos_) <= range_ && (pick == &want || kill_value(o) > kill_value(*pick))) pick = &o;
+        const SeenChamp& e = *pick;
         bool acted = false;
         if (cheb(e.pos, pos_) > range_) acted = approach_unit(me, e.pos, range_);
         if (cheb(e.pos, pos_) <= range_) {
@@ -809,6 +1315,14 @@ bool Bot::fight_enemies(bc::champion& me) {
     // Spells reach further than basic attacks (range 4): fire them at the team's focus
     // enemy, or the weakest in range, before deciding where to walk.
     fire_spells(retreating);
+    if (kHoldCapture && capturing_here() && !in_danger && !clearly_losing) {
+        // Hold the region: hit whatever is in range without stepping off it.
+        use_combat_spells(me, nullptr, target);
+        if (target && cheb(target->pos, pos_) <= range_) attack_target(me, target->handle, target->pos, target->hp);
+        set_status(Task::capture, target_);
+        mark("hold-capture");
+        return true;
+    }
     if (retreating && on_spawn()) {
         // Already home, where enemies cannot step and we heal every turn: shoot whatever
         // is in range, stay while healing, and otherwise get on with the game instead of
@@ -821,6 +1335,10 @@ bool Bot::fight_enemies(bc::champion& me) {
             return true;
         }
         return false;
+    }
+    if (retreating && kPeelBack && hp_ > max_hp_ * 0.15f && peel_back(me, target)) {
+        mark("peel-back");
+        return true;
     }
     if (retreating) {
         // Shoot first if we cannot get away anyway, then run toward home.
@@ -836,6 +1354,30 @@ bool Bot::fight_enemies(bc::champion& me) {
         // at it (one champion stood like this for 200+ rounds).
         return round_ - last_hurt_round_ <= 8;
     }
+    if (kJoinFights && !retreating && !in_danger) {
+        // A teammate is in a fight: hit the enemy on it rather than keep farming or wait for an
+        // enemy to walk into range (on 01elk-arena our Vesper Vale hit the elk while three of us died).
+        const SeenChamp* help = nullptr;
+        int help_d = 1000;
+        for (const auto& e : enemies_) {
+            if (!huntable(e) || cheb(e.pos, pos_) > 7) continue;
+            bool on_ally = false;
+            for (const auto& a : allies_seen_)
+                if (cheb(a.pos, e.pos) <= std::max(2, e.range)) on_ally = true;
+            if (!on_ally) continue;
+            const bool focused = slots_ <= 5 && enemy_id(e) == comms_.focus();
+            const int d = focused ? -1 : cheb(e.pos, pos_);
+            if (d < help_d) {
+                help_d = d;
+                help = &e;
+            }
+        }
+        if (help && strike(*help)) {
+            mark("join-fight");
+            hold_turns_ = 0;
+            return true;
+        }
+    }
     if (target && strike(*target)) {
         hold_turns_ = 0;
         return true;
@@ -846,7 +1388,8 @@ bool Bot::fight_enemies(bc::champion& me) {
         for (const auto& e : enemies_) {
             if (!huntable(e) || cheb(e.pos, pos_) > kEngageRange) continue;
             const bool focused = slots_ <= 5 && enemy_id(e) == comms_.focus();
-            if (!goal || focused || (e.hp < goal->hp && !(slots_ <= 5 && enemy_id(*goal) == comms_.focus()))) goal = &e;
+            const bool better = goal && (kSmartFocus ? kill_value(e) > kill_value(*goal) : e.hp < goal->hp);
+            if (!goal || focused || (better && !(slots_ <= 5 && enemy_id(*goal) == comms_.focus()))) goal = &e;
         }
         if (goal) {
             bool busy = false;  // a teammate is already on it
@@ -855,7 +1398,8 @@ bool Bot::fight_enemies(bc::champion& me) {
             const bool low = goal->hp <= strength_ * 2.f;
             // A ranged champion that steps in cannot attack that turn, and a ranged enemy at the
             // edge of its range shoots first: let it come to us instead.
-            if (ranged_ && !busy && !low && hold_turns_ < kMaxHold) {
+            const bool under_fire = kCampAwareFights && incoming_camp_damage(pos_) > 0;
+            if (ranged_ && !busy && !low && hold_turns_ < kMaxHold && !under_fire) {
                 ++hold_turns_;
                 mark("hold");
                 return true;
@@ -959,6 +1503,13 @@ bool Bot::retreat_from_camps(bc::champion& me) {
 
 bool Bot::engage_ready(const Group& g) {
     if (g.awake || g.harmless) return true;
+    if (g.id == world().breach_group && breach_active()) {
+        // Only the camps within reach of where we stand hit back: go in with a teammate.
+        int here = 1;
+        for (const auto& a : allies_seen_)
+            if (cheb(a.pos, g.anchor) <= g.extent + 5) ++here;
+        return here >= 2 || wait_rounds_ > 20;
+    }
     if (siege_ && g.id == target_) {
         float dps = 0, hp = 0;
         int living = 0;
@@ -1012,6 +1563,19 @@ bool Bot::fight_camps(bc::champion& me) {
         if (c.group != gid) continue;
         if (better(&c, focus)) focus = &c;
         if (cheb(c.pos, pos_) <= range_ && better(&c, in_range)) in_range = &c;
+    }
+    if (gid == W.breach_group && breach_active()) {
+        // Breaching: the outermost camp on the way in, nothing else in the ring.
+        focus = breach_camp();
+        in_range = focus && cheb(focus->pos, pos_) <= range_ ? focus : nullptr;
+        if (!focus) {
+            for (auto t : W.breach)
+                if (const auto* info = W.camp_info_at(t); info && info->alive_known) {
+                    approach_unit(me, t, range_);
+                    break;
+                }
+            return true;
+        }
     }
     if (!focus) return false;
     if (task_ != Task::capture) set_status(task_ == Task::solo ? Task::solo : Task::farm, gid);
@@ -1461,9 +2025,47 @@ void Bot::drop_ward(bc::champion& me) {
             placed = me.place_ward(n);
         } catch (const std::exception&) {
         }
-        if (placed) ward_ready_round_ = round_ + bc::constants::ward_cooldown + 1;
-        else ward_ready_round_ = round_ + 3;
+        if (placed) {
+            ward_ready_round_ = round_ + bc::constants::ward_cooldown + 1;
+            ward_pos_ = n;
+        } else {
+            ward_ready_round_ = round_ + 3;
+        }
         return;
+    }
+}
+
+void Bot::scout_ward(bc::champion& me) {
+    if (!kScoutWards || round_ < ward_ready_round_ || on_spawn()) return;
+    if (cheb(ward_pos_, pos_) <= kScoutWardMove) return;  // our ward already watches this area
+    for (const auto& e : enemies_)
+        if (!harmless_on_spawn(e) && cheb(e.pos, pos_) <= 6) return;  // not in the middle of a fight
+    auto& W = world();
+    load_occupancy();
+    vec2 best{-1, -1};
+    int best_score = -1000;
+    for (int dy = -2; dy <= 2; ++dy)
+        for (int dx = -2; dx <= 2; ++dx) {
+            const vec2 n{pos_.x + dx, pos_.y + dy};
+            if (!free_tile(n) || W.ally_spawn.get(n)) continue;
+            // A bush hides whoever stands in it; otherwise look toward the enemy.
+            const int score = (W.bushes.get(n) ? 10 : 0) + cheb(pos_, W.enemy_centre) - cheb(n, W.enemy_centre);
+            if (score > best_score) {
+                best_score = score;
+                best = n;
+            }
+        }
+    if (best.x < 0) return;
+    bool placed = false;
+    try {
+        placed = me.place_ward(best);
+    } catch (const std::exception&) {
+    }
+    if (placed) {
+        ward_ready_round_ = round_ + bc::constants::ward_cooldown + 1;
+        ward_pos_ = best;
+    } else {
+        ward_ready_round_ = round_ + 3;
     }
 }
 
@@ -1508,6 +2110,7 @@ int Bot::best_altar(int& distance) {
         if (i == altar_choice_ && d != kUnreached) d -= 3;
         // An enemy lock costs five attacks to clear: prefer another altar unless far.
         if (i < 32 && round_ - enemy_lock_round_[i] < 150 && d != kUnreached) d += 12;
+        if (kAltarDanger && gems_ >= kEscortBag && d != kUnreached) d += altar_danger(W.altars[i]);
         if (d < distance) {
             distance = d;
             best = i;
@@ -1588,7 +2191,7 @@ bool Bot::abandon_tribute(bc::champion& me) {
 }
 
 bool Bot::tribute(bc::champion& me) {
-    if (gems_ <= 0) return false;
+    if (gems_ <= 0 || breach_active()) return false;
     int d = 0;
     const int a = best_altar(d);
     if (a < 0 || d == kUnreached) return false;
@@ -1601,11 +2204,46 @@ bool Bot::tribute(bc::champion& me) {
     const bool threatened = kSmallBags ? enemy_recent(kRecentEnemy) : !enemies_.empty();
     const bool want = gems_ >= carry_gems() || endgame || wins || d <= 6 || (threatened && gems_ >= kSmallBag) ||
                       task_ == Task::other;
-    if (!want) return false;
+    if (!want) {
+        escort_wait_ = 0;
+        return false;
+    }
+    const vec2 altar = world().altars[a];
+    if (kSafeAltar && !endgame && !wins) {
+        if (round_ < altar_wait_until_) return false;
+        // Enemies hold the altar and we do not outnumber them: dying here hands them the bag.
+        // Farm for a while and come back.
+        if (cheb(pos_, altar) <= 10 && altar_guarded(altar)) {
+            altar_wait_until_ = round_ + kAltarWait;
+            if (task_ == Task::other) {
+                task_ = Task::farm;
+                target_ = -1;
+            }
+            mark("altar-guarded");
+            return false;
+        }
+    }
+    if (kBankEscort && !endgame && !wins && gems_ >= (kTeamBank ? kEscortBag / 2 : kEscortBag) && escort_wait_ < 8 && cheb(pos_, altar) <= 9 &&
+        cheb(pos_, altar) > bc::constants::submit_gems_range && altar_exposure(altar) > 0) {
+        // An altar in the middle: let the teammate walking with us catch up before going in.
+        bool with = false, coming = false;
+        for (const auto& a : allies_seen_) {
+            const int d = cheb(a.pos, pos_);
+            if (d <= 3) with = true;
+            else if (d <= kEscortRange + 3) coming = true;
+        }
+        if (!with && coming) {
+            ++escort_wait_;
+            task_ = Task::other;
+            target_ = kTribute;
+            set_status(Task::other, kTribute);
+            mark("wait-escort");
+            return true;
+        }
+    }
     task_ = Task::other;
     target_ = kTribute;
     set_status(Task::other, kTribute);
-    const vec2 altar = world().altars[a];
     if (cheb(pos_, altar) <= bc::constants::submit_gems_range) {
         // A channel the enemies here would cut short just hands them the bag.
         const float threat = tribute_threat();
@@ -1654,17 +2292,32 @@ bool Bot::capture(bc::champion& me) {
             capture_fail_ = 0;
         }
     }
+    // Our Marcella is coming for this gem reward: leave it to her (rewards are split among
+    // allies standing on the region) and get on with the next camp.
+    if (task_ == Task::capture && target_ >= 0 && W.groups[target_].gems > 0 && banker_slot_ >= 0 &&
+        comms_.slot(banker_slot_).task == Task::capture && comms_.slot(banker_slot_).target == target_ &&
+        banker_free_near(W.groups[target_].anchor, kBankerReach, target_)) {
+        task_ = Task::farm;
+        target_ = -1;
+        capture_fail_ = 0;
+    }
     if (task_ != Task::capture) {
         // Claim a waiting reward nearby that nobody else is collecting.
+        const bool banker = kMarcellaBank && type_ == bc::champion_type::marcella;
         int best = -1, best_d = 1000;
-        for (const auto& g : W.groups) {
+        for (auto& g : W.groups) {
             if (g.state != GroupState::reward || g.seen_round != round_) continue;
+            if (opening_blocks(g, true)) continue;
             const int d = cheb(g.anchor, pos_);
-            if (d > 10 || d >= best_d || g.id > kMaxTarget || round_ < avoid_until_[g.id & 63]) continue;
+            if (d > (banker && g.gems > 0 ? kBankerClaim : 10) || d >= best_d || g.id > kMaxTarget || round_ < avoid_until_[g.id & 63]) continue;
+            // Marcella turns gems into gold: leave gem rewards to her when she is close and free.
+            if (g.gems > 0 && banker_free_near(g.anchor, kBankerReach, g.id)) continue;
             // Rewards are split among allies standing on the region: with small bags, big gem
             // rewards are shared so no single champion walks off with a bag worth dying for.
             const int sharers = !kSmallBags ? 1 : g.gems >= 100 ? 5 : g.gems >= 40 ? 3 : 1;
-            if (comms_.claims_by_others(slot_, Task::capture, g.id, slots_) >= sharers) continue;
+            // Close by, Marcella takes a gem reward over (the claimant leaves it to her).
+            const bool take_over = banker && g.gems > 0 && d <= kBankerReach;
+            if (!take_over && comms_.claims_by_others(slot_, Task::capture, g.id, slots_) >= sharers) continue;
             best = g.id;
             best_d = d;
         }
@@ -1814,7 +2467,7 @@ float Bot::heal_rounds(const Group& g, float dps, float hp) {
 float Bot::siege_rounds(const Group& g, float team_dps, float team_hp, bool unlocks) {
     // Extra rounds spent going home and back between trips; negative when out of reach.
     const float damage = forecast(g, team_dps).damage;
-    if (damage <= team_hp * (unlocks ? 0.8f : 0.55f)) return 0;
+    if (damage <= team_hp * (unlocks ? 0.8f : kSiegeShare)) return 0;
     // A young team besieging a monolith in contested ground loses the early game.
     if (!unlocks && round_ < kSiegeFrom) return -1;
     const float trips = damage / std::max(team_hp * kTripShare, 1.f);
@@ -1831,13 +2484,26 @@ bool Bot::any_altar_open() const {
     return false;
 }
 
-int Bot::choose_squad_target(float team_dps, float team_hp, int exclude) {
+int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool allow_contested) {
+    // Nothing can be banked until the way to an altar is open.
+    if (breach_active()) return world().breach_group;
+    // Wait for the camps beside us to respawn rather than walking across the map: on 01big-world
+    // the squad walked 60-75 tiles to a far camp whenever the two by our spawn were respawning,
+    // and cleared those half as often as the other team (6 against 12 times each).
+    // In the opening, though, a respawning camp on our side must not keep the squad off a big
+    // contested one (01concentrated-wealth: the 71-gem middle camp waited until round 369, not
+    // 105): there the old 60-round wait applies, and contested camps stay a fallback.
+    const int respawn_wait = kSafeOpening && round_ < kOpeningRounds ? (allow_contested ? 15 : 60) : kRespawnWait;
     auto& W = world();
     team_dps *= kFightEfficiency;
     const bool altar_reachable = any_altar_open();
+    // Nearest first: the loop stops when fuel runs low, and in group order it used to stop
+    // before reaching the camps beside us (01big-world: four island groups came first).
+    const auto order = nearest_groups();
     int best = -1;
     float best_score = 0;
-    for (auto& g : W.groups) {
+    for (const int gi : order) {
+        auto& g = W.groups[gi];
         if (bc::fuel_remaining() < 20000) break;
         if (g.unreachable || g.harmless || g.id > kMaxTarget || g.id == exclude || g.state == GroupState::reward) continue;
         if (round_ < avoid_until_[g.id & 63]) continue;
@@ -1846,13 +2512,23 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude) {
         // When every altar is walled in by camps, the camps doing it hold the game hostage.
         const bool unlocks = !altar_reachable && blocks_altar(g);
         if (d == kUnreached) continue;
+        // Camps walling in every altar stay a target: nothing can be banked until they fall.
+        // In the opening a contested camp counts for less rather than nothing: with only poor camps
+        // on our side, the squad used to walk 100 tiles for a 4-gem wolf (01concentrated-wealth)
+        // while the 71-gem camp in the middle waited until round 369.
+        bool contested_now = false;
+        if (!unlocks && opening_blocks(g, allow_contested)) {
+            if (!(kSoftOpening && g.contested)) continue;
+            contested_now = true;
+        }
         const float extra = siege_rounds(g, team_dps, team_hp, unlocks);
         if (extra < 0) continue;
-        if (!g.alive_by(round_ + d + 15)) continue;
+        if (!g.alive_by(round_ + d + respawn_wait)) continue;
         float score = (g.value(kGoldWeight) + (unlocks ? 1000.f : 0.f)) /
                       (group_rounds(g, team_dps, d) + extra + heal_rounds(g, team_dps, team_hp));
         // Contested ground near the enemy spawn is riskier.
         if (enemy_side(g)) score *= enemy_side_factor(false);
+        if (contested_now) score *= kOpeningContested;
         score *= target_danger(g);
         if (score > best_score) {
             best_score = score;
@@ -1863,10 +2539,12 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude) {
     // Nothing dangerous is worth it (clusters only, or every camp respawning): the squad
     // farms clusters together rather than scattering, which leaves lone champions for
     // an enemy team to pick off.
-    for (auto& g : W.groups) {
+    for (const int gi : order) {
+        auto& g = W.groups[gi];
         if (bc::fuel_remaining() < 20000) break;
         if (!g.harmless || g.unreachable || g.id > kMaxTarget || g.id == exclude || g.state == GroupState::reward) continue;
         if (comms_.claimed_by_other(slot_, Task::solo, g.id, slots_)) continue;
+        if (opening_blocks(g, allow_contested)) continue;
         const int d = dist_to_group(g);
         if (d == kUnreached || !g.alive_by(round_ + d + 5)) continue;
         float score = g.value(kGoldWeight) / group_rounds(g, team_dps, d);
@@ -1902,7 +2580,8 @@ void Bot::choose_task(bc::champion& me) {
     // without enough people picks something the champions actually present can clear.
     int squad = comms_.squad_target();
     if (squad >= static_cast<int>(W.groups.size())) squad = -1;
-    const bool stalled = squad >= 0 && target_ == squad && task_ == Task::farm && wait_rounds_ > 20 && !W.groups[squad].awake;
+    const bool breaching = squad >= 0 && squad == W.breach_group && breach_active();
+    const bool stalled = !breaching && squad >= 0 && target_ == squad && task_ == Task::farm && wait_rounds_ > kStallRounds && !W.groups[squad].awake;
     // A squad that could not assemble enough strength here should not come straight back.
     if (stalled) avoid_until_[squad & 63] = round_ + 80;
     if (squad >= 0) {
@@ -1924,36 +2603,53 @@ void Bot::choose_task(bc::champion& me) {
         // than walk back there one at a time.
         const bool deadly = kDangerMemory && !g.awake && !unlocks && danger_factor(g.anchor) < 0.35f;
         if (deadly) avoid_until_[squad & 63] = round_ + 60;
-        if (stale || stalled || blocked_for_me || deadly) squad = -1;
+        if ((stale || stalled || blocked_for_me || deadly) && !breaching) squad = -1;
     }
     if (squad < 0 && bc::fuel_remaining() > 30000) {
         float dps = team_dps, hp = team_hp;
         if (stalled) local_power(dps, hp);
         squad = choose_squad_target(dps, hp, stalled ? comms_.squad_target() : -1);
+        if (squad < 0 && kSafeOpening && round_ < kOpeningRounds) squad = choose_squad_target(dps, hp, stalled ? comms_.squad_target() : -1, true);
         if (squad >= 0 || !stalled) comms_.set_squad_target(squad);
         else squad = comms_.squad_target();
     }
 
-    // Solo work is limited to harmless clusters nearby, and to a third of the team.
+    // Solo work is limited to harmless clusters nearby (and, with kSoloCamps, fighting camps
+    // on our side we can clear alone), and to a third of the team.
     int solos = 0;
     for (int i = 0; i < slots_; ++i)
         if (i != slot_ && comms_.slot(i).task == Task::solo) ++solos;
-    const bool may_solo = solos < std::max(1, active / 3) || squad < 0;
+    // Side jobs while the squad waits: with its target respawning for a while, anyone may clear
+    // a nearby camp alone that it can finish and walk back from before the respawn. On 00rows 15%
+    // of champion time went to standing beside a respawning camp.
+    int squad_wait = 0;
+    if (kWaitJobs && squad >= 0 && W.groups[squad].state == GroupState::respawning)
+        squad_wait = W.groups[squad].respawn_round - round_ - dist_to_group(W.groups[squad]);
+    const bool waiting = squad_wait > kWaitJobMin;
+    const bool may_solo = waiting || solos < std::max(1, active / 3) || squad < 0;
     const float my_dps = dps_of(type_, strength_, focus_);
+    const auto order = nearest_groups();
     int solo = -1;
     float solo_score = 0;
-    for (auto& g : W.groups) {
+    for (const int gi : order) {
+        auto& g = W.groups[gi];
         if (!may_solo) break;
-        if (!g.harmless || g.unreachable || g.id > kMaxTarget || g.state == GroupState::reward) continue;
+        if (g.unreachable || g.id > kMaxTarget || g.state == GroupState::reward || g.id == squad) continue;
+        if (!g.harmless && !kSoloCamps && !waiting) continue;
         if (round_ < avoid_until_[g.id & 63]) continue;
+        if (opening_blocks(g, false)) continue;
         if (comms_.claimed_by_other(slot_, Task::solo, g.id, slots_) ||
             comms_.claimed_by_other(slot_, Task::capture, g.id, slots_))
             continue;
         if (bc::fuel_remaining() < 12000) break;
         if (cheb(g.anchor, pos_) > 24) continue;
+        // Fighting camps cost a distance field and a forecast each: only with fuel to spare.
+        if (!g.harmless && (bc::fuel_remaining() < 35000 || !solo_camp_ok(g, my_dps))) continue;
         const int d = dist_to_group(g);
         if (d == kUnreached || d > (squad < 0 ? 60 : 20)) continue;
         if (!g.alive_by(round_ + d + 5)) continue;
+        // A side job has to be done (there, clear, capture, back) before the squad's camp returns.
+        if (waiting && 2 * d + forecast(g, my_dps).rounds + kCaptureRounds > squad_wait) continue;
         float score = g.value(kGoldWeight) / (group_rounds(g, my_dps, d) + heal_rounds(g, my_dps, hp_));
         if (enemy_side(g)) score *= enemy_side_factor(true);
         score *= target_danger(g);
@@ -1998,7 +2694,7 @@ bool Bot::farm(bc::champion& me) {
         if (!g.alive_by(round_ + 25) || g.state == GroupState::reward) replan = true;
         // Follow the squad when someone moved it.
         if (task_ == Task::farm && target_ != comms_.squad_target()) replan = true;
-        if (wait_rounds_ > 20 && !g.awake) replan = true;
+        if (wait_rounds_ > kStallRounds && !g.awake) replan = true;
         // A solo target we have waited at this long without a fight is not working out
         // (unseen camps, an unreachable tile): try something else for a while.
         if (task_ == Task::solo && wait_rounds_ > 25 && !g.awake) avoid_until_[target_ & 63] = round_ + 60;

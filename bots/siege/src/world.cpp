@@ -17,6 +17,15 @@ int World::add_poi(std::vector<vec2> tiles, const bc::bitboard* board, bool walk
 }
 
 void World::init() {
+    // A turn that runs out of fuel in here runs it again next turn: start from empty lists.
+    groups.clear();
+    pois.clear();
+    altar_poi.clear();
+    precompute_next = 0;
+    breach.clear();
+    breach_board.clear();
+    breach_group = -1;
+    breach_planned = false;
     w = bc::map::width();
     h = bc::map::height();
     const auto& enemy_region = bc::map::spawn_region(team::enemy);
@@ -25,6 +34,7 @@ void World::init() {
     ally_spawn.load(bc::map::spawn_region(team::ally), w, h);
     enemy_spawn.load(enemy_region, w, h);
     altars_grid.load(bc::map::altars(), w, h);
+    bushes.load(bc::map::bushes(), w, h);
     altars = bc::map::altars().positions();
     spawn_tiles = bc::map::spawn_region(team::ally).positions();
     ally_centre = spawn_tiles.empty() ? vec2{} : spawn_tiles[spawn_tiles.size() / 2];
@@ -37,6 +47,9 @@ void World::init() {
     // Camp design stats are per kind; query each kind once.
     std::array<std::optional<bc::camp_stats>, 6> kind_stats;
     const auto raw_groups = bc::map::camp_groups();
+    // Growing these lists one push at a time cost most of the setup's fuel on big maps.
+    groups.reserve(raw_groups.size());
+    pois.reserve(raw_groups.size() + 2 + altars.size());
     for (const auto& raw : raw_groups) {
         Group g;
         g.id = static_cast<int>(groups.size());
@@ -44,6 +57,9 @@ void World::init() {
         g.gems = static_cast<int>(raw.gem_value());
         g.gold = static_cast<int>(raw.gold_value());
         g.respawn = raw.max_respawn_timer();
+        g.camps.reserve(raw.camps().size());
+        g.tiles.reserve(raw.camps().size());
+        g.by_strength.reserve(raw.camps().size());
         for (const auto& c : raw.camps()) {
             const auto kind = c.kind();
             auto& stats = kind_stats[static_cast<int>(kind)];
@@ -61,9 +77,16 @@ void World::init() {
         }
         if (g.camps.empty()) continue;
         g.harmless = g.strength <= 0;
-        for (int i = 0; i < static_cast<int>(g.camps.size()); ++i) g.by_strength.push_back(i);
-        std::stable_sort(g.by_strength.begin(), g.by_strength.end(),
-                         [&](int a, int b) { return g.camps[a].strength > g.camps[b].strength; });
+        // Strongest first, ties in map order (insertion sort: a group has a handful of camps).
+        for (int i = 0; i < static_cast<int>(g.camps.size()); ++i) {
+            int j = static_cast<int>(g.by_strength.size());
+            g.by_strength.push_back(i);
+            while (j > 0 && g.camps[g.by_strength[j - 1]].strength < g.camps[i].strength) {
+                g.by_strength[j] = g.by_strength[j - 1];
+                --j;
+            }
+            g.by_strength[j] = i;
+        }
         g.hp_left = g.max_hp;
         // Anchor on the tile closest to the group's centre so distances are representative.
         vec2 sum{0, 0};
@@ -76,6 +99,14 @@ void World::init() {
     }
 
     camp_grid.load(camp_board, w, h);
+    // Precompute fields nearest first. In group order, the first targets on a big map (100x100)
+    // were whichever low-numbered groups had fields: the squad walked 40-60 tiles to them and
+    // left the camps beside our spawn for 200 rounds.
+    group_order.clear();
+    for (std::size_t i = 0; i < groups.size(); ++i) group_order.push_back(static_cast<int>(i));
+    std::sort(group_order.begin(), group_order.end(), [&](int a, int b) {
+        return cheb(groups[a].anchor, ally_centre) < cheb(groups[b].anchor, ally_centre);
+    });
     spawn_poi = add_poi({}, &bc::map::spawn_region(team::ally), true);
     enemy_spawn_poi = add_poi({}, &enemy_region, false);
     for (auto altar : altars) altar_poi.push_back(add_poi({altar}, nullptr, false));
@@ -102,6 +133,7 @@ const bc::distance_field* World::field(int poi_id, std::uint64_t fuel_floor) {
         for (auto t : poi.tiles) beside.draw_chebyshev(t, 1);
         camps &= ~beside;
     }
+    if (!breach.empty()) camps &= ~breach_board;
     field->compute((blocked_board | camps) & ~roots, roots, visited);
     poi.field = std::move(field);
     return poi.field.get();
@@ -133,7 +165,44 @@ std::uint16_t World::dist_on(const bc::distance_field& f, vec2 p) const {
     return kUnreached;
 }
 
+void World::plan_breach(std::uint64_t fuel_floor) {
+    if (breach_planned) return;
+    const std::uint64_t estimate = static_cast<std::uint64_t>(w) * h * 3 + 2000;
+    if (bc::fuel_remaining() < fuel_floor + estimate * (altars.size() + 2)) return;  // a later turn
+    breach_planned = true;
+    if (altars.empty() || spawn_tiles.empty()) return;
+    const vec2 home = spawn_tiles[spawn_tiles.size() / 2];
+    // An altar we can walk to past the live camps needs no breach.
+    for (std::size_t i = 0; i < altar_poi.size(); ++i)
+        if (dist(altar_poi[i], home, 0) != kUnreached) return;
+    // Walk in on terrain alone and note the camps on the way; keep the altar needing fewest kills.
+    for (auto altar : altars) {
+        bc::bitboard roots;
+        roots.clear();
+        roots.set(altar);
+        bc::distance_field f;
+        bc::bitboard visited;
+        f.compute(blocked_board & ~roots, roots, visited);
+        if (f.get(home) == kUnreached) continue;
+        std::vector<vec2> on_path;
+        vec2 p = home;
+        for (int step = 0; step < w * h && p != altar; ++step) {
+            const auto move = f.next_move_from(p);
+            if (!move) break;
+            p += *move;
+            if (camp_grid.get(p)) on_path.push_back(p);
+        }
+        if (!on_path.empty() && (breach.empty() || on_path.size() < breach.size())) breach = std::move(on_path);
+    }
+    if (breach.empty()) return;
+    breach_group = group_id_at(breach.front());
+    for (auto t : breach) breach_board.set(t);
+    // Altar routes so far went around the breach camps: compute them again through it.
+    for (int poi : altar_poi) pois[poi].field.reset();
+}
+
 void World::precompute(std::uint64_t fuel_floor) {
+    plan_breach(fuel_floor);
     // Spawns and altars first (every trip home and every tribute needs them), then groups.
     const std::size_t specials = 2 + altar_poi.size();
     while (precompute_next < pois.size()) {
@@ -142,7 +211,7 @@ void World::precompute(std::uint64_t fuel_floor) {
         if (index == 0) poi = spawn_poi;
         else if (index == 1) poi = enemy_spawn_poi;
         else if (index < specials) poi = altar_poi[index - 2];
-        else poi = groups[index - specials].poi;
+        else poi = groups[group_order[index - specials]].poi;
         if (!has_field(poi) && !field(poi, fuel_floor)) return;
         ++precompute_next;
     }

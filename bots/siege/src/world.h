@@ -79,6 +79,7 @@ public:
     BitGrid ally_spawn;
     BitGrid enemy_spawn;
     BitGrid altars_grid;
+    BitGrid bushes;       // block sight; good places for a ward
     bc::bitboard blocked_board;
     bc::bitboard camp_board;  // every camp spawn tile
     std::vector<Group> groups;
@@ -95,6 +96,16 @@ public:
     int spawn_poi = -1;
     int enemy_spawn_poi = -1;
     bool ready = false;
+    // An altar walled in by camps further out than its neighbours (02the-pack: a ring of 48
+    // wolves around the only altar): the camp tiles on the shortest walk in from our spawn,
+    // outermost first. Fields treat them as open ground, so routes go through once they die.
+    std::vector<vec2> breach;
+    bc::bitboard breach_board;
+    int breach_group = -1;
+    bool breach_planned = false;
+    void plan_breach(std::uint64_t fuel_floor);
+    // Groups nearest our spawn first: the order distance fields are precomputed in.
+    std::vector<int> group_order;
 
     void init();
     // Computes a field if it is missing and enough fuel remains; returns null otherwise.

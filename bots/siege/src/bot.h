@@ -28,6 +28,7 @@ struct SeenChamp {
     int gems;
     float burst = 0;  // damage it can deal in one turn: basic attack(s) plus its biggest spell
     int reach = 1;    // tiles from which that burst can land next turn (walks, spells, dashes)
+    bc::champion_type type{};
 };
 
 // Where enemy champions were seen together, so targets near them can be avoided for a while.
@@ -82,7 +83,9 @@ private:
 
     // Planning.
     void choose_task(bc::champion& me);
-    int choose_squad_target(float team_dps, float team_hp, int exclude);
+    int choose_squad_target(float team_dps, float team_hp, int exclude, bool allow_contested = false);
+    bool opening_blocks(Group& g, bool allow_contested);
+    void scout_ward(bc::champion& me);
     void local_power(float& dps, float& hp) const;
     Forecast forecast(const Group& g, float dps) const;
     float group_rounds(const Group& g, float dps, int travel) const;
@@ -139,6 +142,22 @@ private:
     int carry_gems() const;
     float enemy_side_factor(bool solo) const;
     bool wait_for_escort();
+    bool early_warning(bc::champion& me);
+    bool capturing_here() const;
+    bool banker_free_near(vec2 p, int range, int group) const;
+    bool solo_camp_ok(Group& g, float dps);
+    bool altar_guarded(vec2 altar) const;
+    int altar_exposure(vec2 altar) const;
+    int altar_danger(vec2 altar) const;
+    bool escort_banker(bc::champion& me);
+    bool guard_altar(bc::champion& me);
+    bool intercept_tribute(bc::champion& me);
+    bool breach_active() const;
+    float kill_value(const SeenChamp& e) const;
+    bool peel_back(bc::champion& me, const SeenChamp* target);
+    bool answer_call(bc::champion& me);
+    std::vector<int> nearest_groups() const;
+    const SeenCamp* breach_camp() const;
     bool on_spawn() const { return world().ally_spawn.get(pos_); }
 
     // Match constants.
@@ -237,4 +256,9 @@ private:
     }();
     int team_death_next_ = 0;
     int hold_turns_ = 0;  // turns spent waiting for an enemy to step into our range
+    vec2 ward_pos_{-100, -100};  // where our ward stands
+    int banker_slot_ = -1;       // our Marcella's slot, if we drafted her
+    int altar_wait_until_ = -1;  // enemies held the altar: farm until this round
+    int escort_wait_ = 0;        // rounds this altar trip has waited for a teammate
+    std::vector<bc::champion_type> ally_types_;  // champion type per slot
 };
