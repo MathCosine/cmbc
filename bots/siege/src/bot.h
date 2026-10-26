@@ -162,6 +162,7 @@ private:
     bool breach_active() const;
     float kill_value(const SeenChamp& e) const;
     bool better_target(const SeenChamp& e, const SeenChamp& than) const;
+    bool near_contested_altar(vec2 p) const;
     bool lock_detour(bc::champion& me);
     bool invaded() const;
     float altar_zone(const Group& g) const;

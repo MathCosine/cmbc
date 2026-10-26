@@ -53,6 +53,15 @@ constexpr int kCarryGems = 40;
 constexpr float kFightEfficiency = 0.8f;
 constexpr int kRewardTimeout = 8;  // rounds a reward out of sight is assumed to stay uncaptured
 constexpr std::uint64_t kPlanFuel = 45000;  // fuel needed before optional planning work
+// Fuel left when target planning stops looking at more camps. Running out mid-turn does not end
+// the turn: the rest of it runs next round on that round's fuel (and that round's planning is
+// lost). On 00lanes the solo loop spent ~2,500 a camp before reaching its old check at 12,000 and
+// ran dry 45 times a game. kSoloFuelFirst checks first thing in each pass. Out of 140, solo fix:
+// 78 against v19, 120 against a Cassi & Issac team, 88 against fishsim (v19: 113/93); farming
+// 1,136 against 1,154 rounds to 1,000 gems. A 30,000 squad floor as well: 70/117/86.
+constexpr std::uint64_t kSquadPlanFloor = 20000;
+constexpr std::uint64_t kSoloPlanFloor = 20000;
+constexpr bool kSoloFuelFirst = true;
 constexpr std::uint64_t kSetupFuel = 60000;  // left after building the map to finish setup this turn
 constexpr std::uint64_t kActFuel = 50000;    // left after setup to act this turn
 
@@ -303,6 +312,7 @@ constexpr bool kRefineFight = false;
 // 1,144 rounds to 1,000 gems, 6% more by round 800 on the five ladder maps.
 constexpr bool kHuntBag = false;
 constexpr bool kLockDenial = true;
+constexpr bool kNearestLock = true;  // lock detours go to the nearest open altar, not the first listed
 constexpr float kAltarZoneBias = 0.4f;
 // Home defense: against teams that come to us (32 of our 54 deaths on 01elk-arena were in our own
 // third), a losing fight near home falls back onto our spawn, where we heal every round and they
@@ -311,6 +321,19 @@ constexpr float kAltarZoneBias = 0.4f;
 // Out of 140: 69 against v18, 110 against 115 against a Cassi & Issac team, 87 against 84 against
 // fishsim, 107 against 105 against hunter (the most aggressive sparring bot): neutral, off.
 constexpr bool kHomeDefense = false;
+// Altar defense (with kHuntBag, which reads enemy bags): engage an enemy carrying 20+ gems within 6
+// tiles of a middle or enemy-side altar from up to 7 tiles (5 otherwise), unless outnumbered.
+// Out of 140 (against v19 / a Cassi & Issac team / fishsim): 67/114/88 (v19 70/113/93): off.
+constexpr bool kAltarDefense = false;
+// Worth-it bag hunt (refines altar defense): go after a bag near an altar only when the fight is
+// clearly won (our side, counting champions around the carrier too, needs at most 1/kBagFightEdge
+// of the rounds theirs does), we are healthy, and the bag holds at least kBagWorthGems and 10 more
+// than ours (a lost fight hands ours over). Ranged champions chase such a bag instead of holding.
+// With altar defense, out of 140: loose (1.2, 20 gems) 70/114/91, 1.5 and 30 gems 70/110/82,
+// strict (2.0, 40 gems) 69/108/86: off.
+constexpr bool kWorthBag = false;
+constexpr float kBagFightEdge = 1.5f;
+constexpr int kBagWorthGems = 30;
 constexpr int kHomeDefenseRange = 12;
 constexpr bool kEngageFar = false;
 constexpr bool kLeash = true;
@@ -536,7 +559,7 @@ void Bot::observe(bc::champion& me) {
         const auto t = c.champion_name();
         SeenChamp s{c, c.position(), c.health(), c.max_health(), 0, model_for(t).range, 0};
         s.type = t;
-        if (kHuntBag && enemy) {
+        if ((kHuntBag || kAltarDefense) && enemy) {
             try {
                 s.gems = static_cast<int>(c.gem_count());
             } catch (const std::exception&) {
@@ -1027,8 +1050,15 @@ int Bot::home_dist(const Group& g) const {
     return d;
 }
 
+bool Bot::near_contested_altar(vec2 p) const {
+    for (auto a : world().altars)
+        if (cheb(a, p) <= 6 && altar_exposure(a) > 0) return true;
+    return false;
+}
+
 bool Bot::better_target(const SeenChamp& e, const SeenChamp& than) const {
-    if (kHuntBag) {
+    // With altar defense alone, bags count only around a contested altar (where they come to bank).
+    if (kHuntBag || (kAltarDefense && (near_contested_altar(e.pos) || near_contested_altar(than.pos)))) {
         // Carried gems change hands on the kill: weigh them against the health left to chew through.
         const float a = (e.gems + 10.f) / std::max(e.hp, 1.f), b = (than.gems + 10.f) / std::max(than.hp, 1.f);
         if (std::abs(e.gems - than.gems) >= 10) return a > b;
@@ -1040,23 +1070,33 @@ bool Bot::lock_detour(bc::champion& me) {
     // A lock in hand and an unlocked altar in the middle or on their side a short walk away.
     if (!has_lock_ || hp_ < max_hp_ * 0.5f || gems_ >= kBagCautionGems || on_spawn()) return false;
     const auto& W = world();
+    int best = -1;
     for (int i = 0; i < static_cast<int>(W.altars.size()); ++i) {
         const vec2 a = W.altars[i];
         if (cheb(a, pos_) > 8 || cheb(a, pos_) <= 2 || !visible_.get(a) || altar_exposure(a) == 0) continue;
+        // The nearest one (taking the first in list order switched between two altars mid-walk).
+        if (kNearestLock && best >= 0 && cheb(a, pos_) >= cheb(W.altars[best], pos_)) continue;
         if (bc::vision::has_altar_lock(a)) continue;
         if (!altar_open(i)) continue;
-        mark("lock-detour");
-        return approach_unit(me, a, 2);
+        best = i;
+        if (!kNearestLock) break;
     }
-    return false;
+    if (best < 0) return false;
+    return approach_unit(me, W.altars[best], 2);
 }
 
 float Bot::altar_zone(const Group& g) const {
     // Camps a few tiles from an altar in the middle or on their side: farming there keeps us about
-    // when their champions come to bank.
+    // when their champions come to bank. Altars and camps never move: worked out once per group.
+    if (g.zone >= 0) return g.zone;
+    float z = 1.f;
     for (auto a : world().altars)
-        if (cheb(a, g.anchor) <= 6 && altar_exposure(a) > 0) return 1.f + kAltarZoneBias;
-    return 1.f;
+        if (cheb(a, g.anchor) <= 6 && altar_exposure(a) > 0) {
+            z = 1.f + kAltarZoneBias;
+            break;
+        }
+    const_cast<Group&>(g).zone = z;
+    return z;
 }
 
 bool Bot::invaded() const {
@@ -1413,6 +1453,24 @@ bool Bot::fight_enemies(bc::champion& me) {
     // A bag worth guarding (it goes to whoever kills us): leave as soon as the fight looks lost.
     const bool bag = kBagCaution && gems_ >= kBagCautionGems;
     const bool clearly_losing = we_need > they_need * (bag ? 1.0f : pressured() ? 1.3f : 1.6f) || outnumbered;
+    // A bag near a contested altar worth leaving our task for: big enough, bigger than ours, and a
+    // fight we clearly win once the carrier's escort is counted too.
+    auto worth_bag = [&](const SeenChamp& t) {
+        if (t.gems < std::max(kBagWorthGems, gems_ + 10) || hp_ < max_hp_ * 0.6f || outnumbered) return false;
+        if (!near_contested_altar(t.pos)) return false;
+        float edps = 0, ehp = 0, adps = my_dps, ahp = hp_;
+        for (const auto& e : enemies_)
+            if (!harmless_on_spawn(e) && (cheb(e.pos, pos_) <= sense || cheb(e.pos, t.pos) <= kCrowdRange)) {
+                edps += e.dps;
+                ehp += e.hp;
+            }
+        for (const auto& a : allies_seen_)
+            if (cheb(a.pos, pos_) <= ally_range || cheb(a.pos, t.pos) <= kCrowdRange) {
+                adps += a.dps;
+                ahp += a.hp;
+            }
+        return ehp / std::max(adps, 1.f) * kBagFightEdge <= ahp / std::max(edps, 1.f);
+    };
 
     std::vector<std::pair<vec2, int>> threats;
     for (const auto& e : enemies_) {
@@ -1542,7 +1600,8 @@ bool Bot::fight_enemies(bc::champion& me) {
             if (!on_ally) continue;
             const bool focused = slots_ <= 5 && enemy_id(e) == comms_.focus();
             int d = focused ? -1 : cheb(e.pos, pos_);
-            if (kHuntBag && !focused && e.gems >= 20) d -= 3;  // a bag worth the extra steps
+            const bool bag_here = kWorthBag ? kAltarDefense && worth_bag(e) : (kHuntBag || (kAltarDefense && near_contested_altar(e.pos))) && e.gems >= 20;
+            if (bag_here && !focused) d -= 3;  // a bag worth the extra steps
             if (d < help_d) {
                 help_d = d;
                 help = &e;
@@ -1562,7 +1621,10 @@ bool Bot::fight_enemies(bc::champion& me) {
         // Engage rather than keep farming while an enemy walks up and picks the moment.
         const SeenChamp* goal = nullptr;
         for (const auto& e : enemies_) {
-            if (!huntable(e) || cheb(e.pos, pos_) > (kEngageFar ? 7 : kEngageRange)) continue;
+            // Altar defense: a bag carrier coming to bank near a contested altar is worth a few more tiles.
+            const bool bag_near_altar = kAltarDefense && cheb(e.pos, pos_) <= 7 &&
+                                        (kWorthBag ? worth_bag(e) : e.gems >= 20 && near_contested_altar(e.pos));
+            if (!huntable(e) || (cheb(e.pos, pos_) > (kEngageFar ? 7 : kEngageRange) && !bag_near_altar)) continue;
             const bool focused = slots_ <= 5 && enemy_id(e) == comms_.focus();
             const bool better = goal && better_target(e, *goal);
             if (!goal || focused || (better && !(slots_ <= 5 && enemy_id(*goal) == comms_.focus()))) goal = &e;
@@ -1575,7 +1637,9 @@ bool Bot::fight_enemies(bc::champion& me) {
             // A ranged champion that steps in cannot attack that turn, and a ranged enemy at the
             // edge of its range shoots first: let it come to us instead.
             const bool under_fire = kCampAwareFights && incoming_camp_damage(pos_) > 0;
-            if (ranged_ && !busy && !low && hold_turns_ < kMaxHold && !under_fire) {
+            // A carrier on its way to bank will not walk up to us: chase it.
+            const bool chase_bag = kWorthBag && kAltarDefense && worth_bag(*goal);
+            if (ranged_ && !busy && !low && hold_turns_ < kMaxHold && !under_fire && !chase_bag) {
                 ++hold_turns_;
                 mark("hold");
                 return true;
@@ -2711,7 +2775,7 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
     float best_score = 0;
     for (const int gi : order) {
         auto& g = W.groups[gi];
-        if (bc::fuel_remaining() < 20000) break;
+        if (bc::fuel_remaining() < kSquadPlanFloor) break;
         if (g.unreachable || g.harmless || g.id > kMaxTarget || g.id == exclude || g.state == GroupState::reward) continue;
         if (g.id == other_party_target_) continue;
         if (round_ < avoid_until_[g.id & 63]) continue;
@@ -2754,7 +2818,7 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
     // an enemy team to pick off.
     for (const int gi : order) {
         auto& g = W.groups[gi];
-        if (bc::fuel_remaining() < 20000) break;
+        if (bc::fuel_remaining() < kSquadPlanFloor) break;
         if (!g.harmless || g.unreachable || g.id > kMaxTarget || g.id == exclude || g.state == GroupState::reward) continue;
         if (g.id == other_party_target_) continue;
         if (comms_.claimed_by_other(slot_, Task::solo, g.id, slots_)) continue;
@@ -2890,6 +2954,7 @@ void Bot::choose_task(bc::champion& me) {
     for (const int gi : order) {
         auto& g = W.groups[gi];
         if (!may_solo) break;
+        if (kSoloFuelFirst && bc::fuel_remaining() < kSoloPlanFloor) break;
         if (g.unreachable || g.id > kMaxTarget || g.state == GroupState::reward || g.id == squad) continue;
         if (!g.harmless && !kSoloCamps && !waiting) continue;
         if (round_ < avoid_until_[g.id & 63]) continue;
@@ -2901,7 +2966,7 @@ void Bot::choose_task(bc::champion& me) {
         if (comms_.claimed_by_other(slot_, Task::solo, g.id, slots_) ||
             comms_.claimed_by_other(slot_, Task::capture, g.id, slots_))
             continue;
-        if (bc::fuel_remaining() < 12000) break;
+        if (bc::fuel_remaining() < kSoloPlanFloor) break;
         if (cheb(g.anchor, pos_) > 24) continue;
         // Fighting camps cost a distance field and a forecast each: only with fuel to spare.
         if (!g.harmless && (bc::fuel_remaining() < 35000 || !solo_camp_ok(g, my_dps))) continue;
