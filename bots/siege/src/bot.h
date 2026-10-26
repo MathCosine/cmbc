@@ -125,6 +125,8 @@ private:
     float design_dps(const bc::champion& c, float strength, float focus) const;
     int best_altar(int& distance);
     bool altar_open(int index) const;
+    bool altar_walls_open(int index, bool stale_ok) const;
+    bool in_their_third(vec2 p) const;
     bool blocks_altar(const Group& g) const;
     bool any_altar_open() const;
     float heal_rounds(const Group& g, float dps, float hp);
@@ -261,4 +263,6 @@ private:
     int altar_wait_until_ = -1;  // enemies held the altar: farm until this round
     int escort_wait_ = 0;        // rounds this altar trip has waited for a teammate
     std::vector<bc::champion_type> ally_types_;  // champion type per slot
+    int enemy_banked_ = 0;               // enemy team's turned-in gems as last seen
+    int enemy_banked_round_ = -1000;     // last round that total went up
 };
