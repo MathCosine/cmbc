@@ -16,6 +16,7 @@ inline constexpr int kTribute = 0;
 inline constexpr int kHome = 1;
 inline constexpr int kDead = 2;
 inline constexpr int kFight = 3;  // in a fight with enemy champions: teammates may come and help
+inline constexpr int kBagFight = 4;  // going after a bag carrier near an altar: teammates come from further
 
 inline constexpr int kMaxSlots = 6;
 inline constexpr int kMaxTarget = 62;
