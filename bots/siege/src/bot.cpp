@@ -199,6 +199,12 @@ constexpr bool kWaitJobs = true;
 constexpr bool kTeamBank = true;
 constexpr bool kAltarGuard = false;
 constexpr bool kInterceptTribute = false;
+// Altar patrol: with kAltarGuard on, the guard checks the altar for kPatrolStay rounds out of every
+// kPatrolPeriod instead of standing there. Off: with team banking 61/140 against team banking
+// alone; without it 67/140 against v12 and 76 against fishsim (v12 74), farming 2.4% slower.
+constexpr bool kAltarPatrol = false;
+constexpr int kPatrolPeriod = 50;
+constexpr int kPatrolStay = 12;
 constexpr int kInterceptRange = 10;
 constexpr int kWaitJobMin = 20;
 constexpr int kEscortRange = 12;
@@ -776,6 +782,8 @@ bool Bot::guard_altar(bc::champion& me) {
     // jobs: enemies turning in there meet a defender (and our lock cancels their tribute), and our
     // own trips to it are not alone.
     if (task_ == Task::capture || hp_ < max_hp_ * 0.6f || on_spawn() || gems_ >= carry_gems()) return false;
+    // Patrol: only kPatrolStay rounds out of every kPatrolPeriod, farming the rest.
+    if (kAltarPatrol && round_ % kPatrolPeriod >= kPatrolStay) return false;
     const auto& W = world();
     vec2 altar{-1, -1};
     int best = 1 << 20;
