@@ -161,6 +161,10 @@ private:
     bool intercept_tribute(bc::champion& me);
     bool breach_active() const;
     float kill_value(const SeenChamp& e) const;
+    bool better_target(const SeenChamp& e, const SeenChamp& than) const;
+    bool lock_detour(bc::champion& me);
+    bool invaded() const;
+    float altar_zone(const Group& g) const;
     bool peel_back(bc::champion& me, const SeenChamp* target);
     bool answer_call(bc::champion& me);
     std::vector<int> nearest_groups() const;

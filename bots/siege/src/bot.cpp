@@ -292,6 +292,26 @@ constexpr float kMiddleBias = 0.3f;
 // camps' reach, and only when the caller is a short walk away (not just across a wall). Out of 140:
 // 64 against v17, 115 against a Cassi & Issac team, 87 against fishsim (68/115/84 without): off.
 constexpr bool kRefineFight = false;
+// v19 ideas. Hunt the bag: a champion's carried gems go to whoever kills it, so among enemies we can
+// hit, prefer the one carrying the most (per point of health). Lock denial: with a lock in hand,
+// walk a few tiles to lock an unlocked altar in the middle or on their side (a lock blocks their
+// tributes until broken and cancels one in progress). Altar zone: camps near a middle or enemy-side
+// altar score kAltarZoneBias more, so our champions are about when theirs come to bank.
+// Out of 140 (against v18 / a Cassi & Issac team / fishsim): altar zone 0.4 with lock denial
+// 78/113/93 (on); lock denial alone 74/117/92; altar zone alone 72/120/87; hunt the bag 70/114/81
+// (off); altar zone with tribute interception 63/113/88; all four 75/114/80. Farming 1,154 against
+// 1,144 rounds to 1,000 gems, 6% more by round 800 on the five ladder maps.
+constexpr bool kHuntBag = false;
+constexpr bool kLockDenial = true;
+constexpr float kAltarZoneBias = 0.4f;
+// Home defense: against teams that come to us (32 of our 54 deaths on 01elk-arena were in our own
+// third), a losing fight near home falls back onto our spawn, where we heal every round and they
+// cannot step, instead of being fought out in the open; only while 2+ enemies were seen together in
+// our half lately, and only within kHomeDefenseRange of our spawn.
+// Out of 140: 69 against v18, 110 against 115 against a Cassi & Issac team, 87 against 84 against
+// fishsim, 107 against 105 against hunter (the most aggressive sparring bot): neutral, off.
+constexpr bool kHomeDefense = false;
+constexpr int kHomeDefenseRange = 12;
 constexpr bool kEngageFar = false;
 constexpr bool kLeash = true;
 constexpr int kEngageRange = 5;
@@ -516,6 +536,12 @@ void Bot::observe(bc::champion& me) {
         const auto t = c.champion_name();
         SeenChamp s{c, c.position(), c.health(), c.max_health(), 0, model_for(t).range, 0};
         s.type = t;
+        if (kHuntBag && enemy) {
+            try {
+                s.gems = static_cast<int>(c.gem_count());
+            } catch (const std::exception&) {
+            }
+        }
         auto& cached = dps_cache_[static_cast<std::uint32_t>(static_cast<bc::handle_champion_t>(c)) & 31];
         const int refresh = kBurstModel && enemy ? 5 : 25;
         if (cached.round < 0 || round_ - cached.round > refresh) {
@@ -1001,6 +1027,46 @@ int Bot::home_dist(const Group& g) const {
     return d;
 }
 
+bool Bot::better_target(const SeenChamp& e, const SeenChamp& than) const {
+    if (kHuntBag) {
+        // Carried gems change hands on the kill: weigh them against the health left to chew through.
+        const float a = (e.gems + 10.f) / std::max(e.hp, 1.f), b = (than.gems + 10.f) / std::max(than.hp, 1.f);
+        if (std::abs(e.gems - than.gems) >= 10) return a > b;
+    }
+    return kSmartFocus ? kill_value(e) > kill_value(than) : e.hp < than.hp;
+}
+
+bool Bot::lock_detour(bc::champion& me) {
+    // A lock in hand and an unlocked altar in the middle or on their side a short walk away.
+    if (!has_lock_ || hp_ < max_hp_ * 0.5f || gems_ >= kBagCautionGems || on_spawn()) return false;
+    const auto& W = world();
+    for (int i = 0; i < static_cast<int>(W.altars.size()); ++i) {
+        const vec2 a = W.altars[i];
+        if (cheb(a, pos_) > 8 || cheb(a, pos_) <= 2 || !visible_.get(a) || altar_exposure(a) == 0) continue;
+        if (bc::vision::has_altar_lock(a)) continue;
+        if (!altar_open(i)) continue;
+        mark("lock-detour");
+        return approach_unit(me, a, 2);
+    }
+    return false;
+}
+
+float Bot::altar_zone(const Group& g) const {
+    // Camps a few tiles from an altar in the middle or on their side: farming there keeps us about
+    // when their champions come to bank.
+    for (auto a : world().altars)
+        if (cheb(a, g.anchor) <= 6 && altar_exposure(a) > 0) return 1.f + kAltarZoneBias;
+    return 1.f;
+}
+
+bool Bot::invaded() const {
+    // Two or more enemies seen together in our half within the last 20 rounds.
+    const auto& W = world();
+    for (const auto& s : sightings_)
+        if (s.count >= 2 && round_ - s.round <= 20 && cheb(s.pos, W.ally_centre) < cheb(s.pos, W.enemy_centre)) return true;
+    return false;
+}
+
 bool Bot::capturing_here() const {
     if (task_ != Task::capture || target_ < 0) return false;
     for (auto t : world().groups[target_].tiles)
@@ -1187,7 +1253,8 @@ void Bot::play_turn() {
 void Bot::act(bc::champion& me) {
     const bool at_spawn = on_spawn();
     mark("shop");
-    if (at_spawn || type_ == bc::champion_type::tavi) shop(me, at_spawn);
+    // Tavi shops anywhere: with lock denial it also buys the next lock in the field (one at a time).
+    if (at_spawn || type_ == bc::champion_type::tavi) shop(me, at_spawn || (kLockDenial && type_ == bc::champion_type::tavi));
     mark("locks");
     place_lock(me);
     scout_ward(me);
@@ -1236,6 +1303,8 @@ void Bot::act(bc::champion& me) {
     if (kBankEscort && escort_banker(me)) return;
     mark("guard-altar");
     if (kAltarGuard && guard_altar(me)) return;
+    mark("lock-detour");
+    if (kLockDenial && lock_detour(me)) return;
     mark("farm");
     if (farm(me)) return;
     mark("idle");
@@ -1274,7 +1343,7 @@ void Bot::fire_spells(bool retreating) {
         for (const auto& e : enemies_) {
             if (world().enemy_spawn.get(e.pos) || cheb(e.pos, pos_) > static_cast<int>(sp.range)) continue;
             const bool focused = slots_ <= 5 && enemy_id(e) == comms_.focus();
-            const bool better = best && (kSmartFocus ? kill_value(e) > kill_value(*best) : e.hp < best->hp);
+            const bool better = best && better_target(e, *best);
             if (!best || focused || (better && !(slots_ <= 5 && enemy_id(*best) == comms_.focus()))) best = &e;
         }
         if (best && spell_ready(i)) cast_on(sp, best->handle);
@@ -1367,9 +1436,7 @@ bool Bot::fight_enemies(bc::champion& me) {
     auto huntable = [&](const SeenChamp& e) { return !world().enemy_spawn.get(e.pos); };
     const SeenChamp* target = nullptr;
     for (const auto& e : enemies_)
-        if (huntable(e) && cheb(e.pos, pos_) <= reach &&
-            (!target || (kSmartFocus ? kill_value(e) > kill_value(*target) : e.hp < target->hp)))
-            target = &e;
+        if (huntable(e) && cheb(e.pos, pos_) <= reach && (!target || better_target(e, *target))) target = &e;
     // Everyone in reach of the team's chosen enemy hits it; otherwise ours becomes the choice.
     if (slots_ <= 5) {
         for (const auto& e : enemies_)
@@ -1410,6 +1477,9 @@ bool Bot::fight_enemies(bc::champion& me) {
         // One teammate beside us is enough to hold a fight that is not clearly lost.
         committed = beside >= 1 && !clearly_losing && hp_ > max_hp_ * 0.25f && (!kBurstModel || burst < hp_);
         retreating = (in_danger || (clearly_losing && nearest_d <= danger_range)) && !can_finish && !committed;
+        if (kHomeDefense && !retreating && losing && !can_finish && !on_spawn() && invaded() &&
+            cheb(pos_, world().ally_centre) <= kHomeDefenseRange)
+            retreating = true;
         // A melee champion beside us walks and hits every turn: running only gives it free
         // hits, so hit back instead.
         if (retreating && !on_spawn() && nearest->range <= 1 && nearest_d <= 2 && target && cheb(target->pos, pos_) <= range_) retreating = false;
@@ -1471,7 +1541,8 @@ bool Bot::fight_enemies(bc::champion& me) {
                 if (cheb(a.pos, e.pos) <= std::max(2, e.range)) on_ally = true;
             if (!on_ally) continue;
             const bool focused = slots_ <= 5 && enemy_id(e) == comms_.focus();
-            const int d = focused ? -1 : cheb(e.pos, pos_);
+            int d = focused ? -1 : cheb(e.pos, pos_);
+            if (kHuntBag && !focused && e.gems >= 20) d -= 3;  // a bag worth the extra steps
             if (d < help_d) {
                 help_d = d;
                 help = &e;
@@ -1493,7 +1564,7 @@ bool Bot::fight_enemies(bc::champion& me) {
         for (const auto& e : enemies_) {
             if (!huntable(e) || cheb(e.pos, pos_) > (kEngageFar ? 7 : kEngageRange)) continue;
             const bool focused = slots_ <= 5 && enemy_id(e) == comms_.focus();
-            const bool better = goal && (kSmartFocus ? kill_value(e) > kill_value(*goal) : e.hp < goal->hp);
+            const bool better = goal && better_target(e, *goal);
             if (!goal || focused || (better && !(slots_ <= 5 && enemy_id(*goal) == comms_.focus()))) goal = &e;
         }
         if (goal) {
@@ -2118,7 +2189,7 @@ void Bot::place_lock(bc::champion& me) {
         for (const auto& e : enemies_)
             if (cheb(e.pos, a) <= 1 && e.handle.is_submitting_gems()) channeling = true;
         const bool their_side = cheb(a, W.enemy_centre) <= cheb(a, W.ally_centre);
-        if (!channeling && !their_side && W.altars.size() > 2) continue;
+        if (!channeling && !their_side && W.altars.size() > 2 && !(kLockDenial && altar_exposure(a) > 0)) continue;
         bool placed = false;
         try {
             placed = me.consumables()[bc::consumable_type::altar_lock].use(a);
@@ -2666,6 +2737,7 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
         // Contested ground near the enemy spawn is riskier.
         if (enemy_side(g)) score *= enemy_side_factor(false);
         if (contested_now) score *= kOpeningContested;
+        if (kAltarZoneBias > 0) score *= altar_zone(g);
         if (kMiddleBias > 0) {
             const vec2 mid{W.w / 2, W.h / 2};
             score *= 1.f + kMiddleBias * (1.f - static_cast<float>(cheb(g.anchor, mid)) / std::max(1, std::max(W.w, W.h) / 2));
@@ -2695,6 +2767,7 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
         if (d == kUnreached || !g.alive_by(round_ + d + 5)) continue;
         float score = g.value(kGoldWeight) / group_rounds(g, team_dps, d);
         if (soft) score *= kOpeningContested;
+        if (kAltarZoneBias > 0) score *= altar_zone(g);
         if (enemy_side(g)) score *= enemy_side_factor(false);
         score *= target_danger(g);
         if (score > best_score) {
