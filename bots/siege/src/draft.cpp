@@ -25,6 +25,14 @@ constexpr std::array kPriority{
 };
 } // namespace
 
+// Heart of Ruin in place of Tavi with five (4 of the 5 strongest ladder teams in the v20/v21 games
+// pick him: 30 Strength but the fastest Focus growth, and up to 50% more damage as he bleeds).
+constexpr bool kHeartDraft = false;
+// Out of 140: 51 against v21, 107 against a Cassi & Issac team, 72 against fishsim (v21 70/115/86):
+// off. Varg in place of Tavi instead: his basic attacks splash, and most camps come in packs.
+// Out of 140 (as above): 63/112/83, farming 1% faster: off.
+constexpr bool kVargDraft = false;
+
 void play_draft() {
     static bool wrote_memory = false;
     if (!wrote_memory) {
@@ -39,7 +47,10 @@ void play_draft() {
     // 173/196 against 147/196 locally.
     constexpr std::array kSmall{champion_draft::vesper_vale, champion_draft::marcella, champion_draft::ryth, champion_draft::tavi, champion_draft::vendetta, champion_draft::willow, champion_draft::varg, champion_draft::heart_of_ruin};
     const bool small_team = cambc::draft::team_size() <= 4;
-    for (auto pick : small_team ? std::span<const champion_draft>(kSmall) : std::span<const champion_draft>(kPriority)) {
+    constexpr std::array kHeart{champion_draft::vendetta, champion_draft::vesper_vale, champion_draft::ryth, champion_draft::heart_of_ruin, champion_draft::marcella, champion_draft::tavi, champion_draft::willow, champion_draft::varg};
+    constexpr std::array kVarg{champion_draft::vendetta, champion_draft::vesper_vale, champion_draft::ryth, champion_draft::varg, champion_draft::marcella, champion_draft::tavi, champion_draft::willow, champion_draft::heart_of_ruin};
+    const auto big = kHeartDraft ? std::span<const champion_draft>(kHeart) : kVargDraft ? std::span<const champion_draft>(kVarg) : std::span<const champion_draft>(kPriority);
+    for (auto pick : small_team ? std::span<const champion_draft>(kSmall) : big) {
         if (std::find(chosen.begin(), chosen.end(), pick) != chosen.end()) continue;
         cambc::draft::pick(pick);
         return;

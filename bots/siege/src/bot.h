@@ -144,6 +144,15 @@ private:
     float target_danger(Group& g);
     bool enemy_recent(int rounds) const { return round_ - last_enemy_round_ <= rounds; }
     bool calm() const;
+    bool on_my_camp() const;
+    int squad_dist(const Group& g);
+    bool unsafe_alone(Group& g);
+    bool stun_wasted(const SeenChamp& e) const;
+    bool stun_turn() const;
+    std::vector<vec2> dash_landings();
+    bool dash_toward(bc::champion& me, vec2 target, int within);
+    bool dash_away(bc::champion& me, const std::vector<std::pair<vec2, int>>& threats);
+    bool held_altar_near(vec2 p) const;
     int recent_team_deaths(int window) const;
     bool pressured() const;
     bool enemy_passive() const;
@@ -198,6 +207,16 @@ private:
     float hp_ = 0, max_hp_ = 0, strength_ = 0, focus_ = 0;
     int gems_ = 0, gold_ = 0;
     float last_hp_ = 0, damage_taken_ = 0;
+    // Learned enemy strength: champion damage we took against what the fight model expected.
+    float dmg_seen_ = 0, dmg_expected_ = 0, last_expect_ = 0;
+    int last_expect_round_ = -10;
+    float enemy_scale() const;
+    // Gem field we camp with the whole team (kFieldCamp): worked out once.
+    bool field_ready_ = false;
+    vec2 field_centre_{-100, -100};
+    int field_gems_ = 0;
+    const vec2* field();
+    bool in_field(vec2 p);
     int last_hp_round_ = -10;
     bool can_move_ = false, can_attack_ = false, can_cast_ = false;
     bool moved_ = false, cast_done_ = false;
@@ -274,6 +293,8 @@ private:
     int altar_wait_until_ = -1;  // enemies held the altar: farm until this round
     int escort_wait_ = 0;        // rounds this altar trip has waited for a teammate
     bool bag_fight_ = false;     // this turn's fight is on a bag worth taking near an altar
+    mutable int held_round_ = -1;           // round held_altars_ was worked out
+    mutable std::vector<vec2> held_altars_;  // middle/enemy-side altars with enemies seen lately
     std::vector<bc::champion_type> ally_types_;  // champion type per slot
     int enemy_banked_ = 0;               // enemy team's turned-in gems as last seen
     int party_target_ = -1;              // second squad: the target its leader chose
