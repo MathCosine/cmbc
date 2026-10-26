@@ -188,6 +188,18 @@ constexpr bool kAltarDanger = true;
 // may clear a nearby camp alone (gold and gem clusters, and fighting camps on our side that cost
 // under kSoloShare of our health), if it can be back before the respawn.
 constexpr bool kWaitJobs = true;
+// Ideas from the v12 scrim on adgato-gemcombat1 (their three met each of ours at the middle
+// altar alone): team banking (bigger escorts for altar trips in the middle), an altar guard (our
+// tank waits beside a middle altar between jobs) and intercepting enemy tributes (an enemy
+// channelling cannot move, and its bag goes to whoever kills it).
+// Tested on all 70 maps (out of 140 against v12, and against fishsim where v12 wins 74):
+// team banking 64 and 77, the only one to win adgato-gemcombat1 against fishsim twice, farming
+// 4% slower: on for a ladder test. Altar guard 61 and 67, intercepting 66 and 76, all three 54
+// and 62: off.
+constexpr bool kTeamBank = true;
+constexpr bool kAltarGuard = false;
+constexpr bool kInterceptTribute = false;
+constexpr int kInterceptRange = 10;
 constexpr int kWaitJobMin = 20;
 constexpr int kEscortRange = 12;
 constexpr int kEscortStretch = 10;  // the banker is this close to the altar
@@ -343,6 +355,7 @@ void Bot::init(bc::champion& me) {
     // Safe to run again if a turn ran out of fuel in here.
     ally_dps_.clear();
     ally_hp_.clear();
+    ally_types_.clear();
     spells_.clear();
     banker_slot_ = -1;
     type_ = me.champion_name();
@@ -356,6 +369,7 @@ void Bot::init(bc::champion& me) {
         if (allies_[i] == me) slot_ = i;
         const auto t = allies_[i].champion_name();
         if (t == bc::champion_type::marcella && banker_slot_ < 0) banker_slot_ = i;
+        ally_types_.push_back(t);
         bc::champion design{t};
         const auto s = design.base_stats();
         ally_dps_.push_back(dps_of(t, s.base_strength, s.base_focus));
@@ -655,7 +669,7 @@ bool Bot::escort_banker(bc::champion& me) {
                 best = cheb(a, banker->pos);
                 altar = a;
             }
-        if (best > kEscortStretch) continue;
+        if (best > (kTeamBank ? kEscortStretch + 4 : kEscortStretch)) continue;
         const int exposure = altar_exposure(altar);
         if (exposure == 0) continue;
         int bag = 0;
@@ -664,9 +678,9 @@ bool Bot::escort_banker(bc::champion& me) {
         } catch (const std::exception&) {
             continue;
         }
-        if (bag < kEscortBag) continue;
+        if (bag < (kTeamBank ? kEscortBag / 2 : kEscortBag)) continue;
         // Escorts needed, and how many free teammates are closer to the banker than we are.
-        const int needed = exposure;
+        const int needed = exposure + (kTeamBank ? 1 : 0);
         const int mine = cheb(banker->pos, pos_);
         int closer = 0;
         for (int j = 0; j < slots_; ++j) {
@@ -723,6 +737,70 @@ int Bot::altar_danger(vec2 altar) const {
     for (const auto& s : sightings_)
         if (round_ - s.round <= 60 && cheb(s.pos, altar) <= 8) held = true;
     return held ? 30 + 8 * altar_exposure(altar) : 0;
+}
+
+bool Bot::intercept_tribute(bc::champion& me) {
+    // An enemy channelling a tribute cannot move and drops its bag to whoever kills it: go for it
+    // unless its friends there outnumber us.
+    if (hp_ < max_hp_ * 0.5f || task_ == Task::capture) return false;
+    const SeenChamp* best = nullptr;
+    for (const auto& e : enemies_) {
+        if (harmless_on_spawn(e) || cheb(e.pos, pos_) > kInterceptRange) continue;
+        bool channelling = false;
+        try {
+            channelling = e.handle.is_submitting_gems();
+        } catch (const std::exception&) {
+        }
+        if (channelling && (!best || cheb(e.pos, pos_) < cheb(best->pos, pos_))) best = &e;
+    }
+    if (!best) return false;
+    int theirs = 0, ours = 1;
+    for (const auto& e : enemies_)
+        if (!harmless_on_spawn(e) && cheb(e.pos, best->pos) <= 4) ++theirs;
+    for (const auto& a : allies_seen_)
+        if (cheb(a.pos, best->pos) <= cheb(pos_, best->pos) + 2) ++ours;
+    if (theirs > ours) return false;
+    mark("intercept");
+    if (cheb(best->pos, pos_) <= range_) {
+        use_combat_spells(me, nullptr, best);
+        attack_target(me, best->handle, best->pos, best->hp);
+    } else {
+        fire_spells(false);
+        approach_unit(me, best->pos, range_);
+    }
+    return true;
+}
+
+bool Bot::guard_altar(bc::champion& me) {
+    // On maps whose altar nearest our spawn sits in the middle, one of us waits beside it between
+    // jobs: enemies turning in there meet a defender (and our lock cancels their tribute), and our
+    // own trips to it are not alone.
+    if (task_ == Task::capture || hp_ < max_hp_ * 0.6f || on_spawn() || gems_ >= carry_gems()) return false;
+    const auto& W = world();
+    vec2 altar{-1, -1};
+    int best = 1 << 20;
+    for (auto a : W.altars)
+        if (cheb(a, W.ally_centre) < best) {
+            best = cheb(a, W.ally_centre);
+            altar = a;
+        }
+    if (altar.x < 0 || altar_exposure(altar) == 0 || slots_ < 3) return false;
+    // The guard: the first living champion in this order (tanks first).
+    static constexpr std::array kGuardOrder{bc::champion_type::ryth, bc::champion_type::marcella, bc::champion_type::vendetta,
+                                            bc::champion_type::tavi, bc::champion_type::vesper_vale};
+    int guard = -1;
+    for (auto t : kGuardOrder) {
+        for (int i = 0; i < slots_ && i < static_cast<int>(ally_types_.size()); ++i)
+            if (ally_types_[i] == t && !slot_dead_[i] && !(comms_.slot(i).task == Task::other && comms_.slot(i).target == kHome)) {
+                guard = i;
+                break;
+            }
+        if (guard >= 0) break;
+    }
+    if (guard != slot_) return false;
+    mark("guard-altar");
+    if (cheb(pos_, altar) > 3) approach_unit(me, altar, 2);
+    return true;
 }
 
 bool Bot::capturing_here() const {
@@ -945,6 +1023,8 @@ void Bot::act(bc::champion& me) {
     if (capture(me)) return;
     mark("escort-bank");
     if (kBankEscort && escort_banker(me)) return;
+    mark("guard-altar");
+    if (kAltarGuard && guard_altar(me)) return;
     mark("farm");
     if (farm(me)) return;
     mark("idle");
@@ -1030,6 +1110,7 @@ bool Bot::fight_enemies(bc::champion& me) {
         }
     }
     if (!nearest) return false;
+    if (kInterceptTribute && intercept_tribute(me)) return true;
     if (nearest_d > (kBurstModel ? 10 : 7)) return kEarlyWarning && nearest_d <= 10 && early_warning(me);
     int their_heads = 0, our_heads = 1;
     for (const auto& e : enemies_)
@@ -1989,7 +2070,7 @@ bool Bot::tribute(bc::champion& me) {
             return false;
         }
     }
-    if (kBankEscort && !endgame && !wins && gems_ >= kEscortBag && escort_wait_ < 8 && cheb(pos_, altar) <= 9 &&
+    if (kBankEscort && !endgame && !wins && gems_ >= (kTeamBank ? kEscortBag / 2 : kEscortBag) && escort_wait_ < 8 && cheb(pos_, altar) <= 9 &&
         cheb(pos_, altar) > bc::constants::submit_gems_range && altar_exposure(altar) > 0) {
         // An altar in the middle: let the teammate walking with us catch up before going in.
         bool with = false, coming = false;

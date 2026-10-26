@@ -149,6 +149,8 @@ private:
     int altar_exposure(vec2 altar) const;
     int altar_danger(vec2 altar) const;
     bool escort_banker(bc::champion& me);
+    bool guard_altar(bc::champion& me);
+    bool intercept_tribute(bc::champion& me);
     bool breach_active() const;
     std::vector<int> nearest_groups() const;
     const SeenCamp* breach_camp() const;
@@ -254,4 +256,5 @@ private:
     int banker_slot_ = -1;       // our Marcella's slot, if we drafted her
     int altar_wait_until_ = -1;  // enemies held the altar: farm until this round
     int escort_wait_ = 0;        // rounds this altar trip has waited for a teammate
+    std::vector<bc::champion_type> ally_types_;  // champion type per slot
 };
