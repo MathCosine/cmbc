@@ -147,6 +147,73 @@ constexpr float kOpeningContested = 0.35f;
 constexpr float kOpeningClusters = 1.0f;
 constexpr bool kSquadClusters = true;
 constexpr bool kClusterSolos = false;
+// v22 against closedai (1-3): on 00lost-world 25 deaths, most of them alone near the middle they
+// hold. kSoloSafe: no solo job within 8 tiles of where we saw enemies in the last kSoloDangerRounds
+// or died in the last 150, nor on contested ground with enemies seen in the last 30 rounds: those
+// are for the squad. kHoldMiddle: with enemies seen around a middle or enemy-side altar lately,
+// camps beside it score kHoldBonus more for the squad, which goes in together and stays.
+// kClusterPlanFloor: the squad only weighs clusters with this much fuel left (squad clusters took
+// fuel-outs from 6 to 8 a game; 60 on a ladder 02treasure-box).
+// With the cluster fuel guard, out of 140 against v22 / a Cassi & Issac team / fishsim / hunter:
+// 71/119/100/111 (v22 70/118/97/111), 85 against 82 against a middle-holding stand-in (on).
+constexpr bool kSoloSafe = true;
+constexpr int kSoloDangerRounds = 40;
+constexpr bool kHoldMiddle = true;
+constexpr float kHoldBonus = 1.5f;
+constexpr std::uint64_t kClusterPlanFloor = 35000;
+// v23 test against Inter Fish (0-5, 0-1,037 on 00vault, 0-1,120 on 00stampede): we won 2 of 77
+// fights and lost 81 champions to their 4; even outnumbering them we dealt 22k to their 37k, their
+// Marcella 106 a fight round to ours 36, Vesper Vale 69 to 19 (twice our gold by round 300). The
+// fight model kept taking those fights. kLearnEnemy: each champion compares the champion damage it
+// takes (turns with no camp on it) with its share of what the model expected the enemies in range
+// to deal, and scales enemy damage by the ratio (never below 1, at most kMaxEnemyScale; a prior of
+// kLearnPrior expected damage keeps it at 1 until the evidence builds up).
+// Locally we take 40-60% of the modelled damage (enemies move, pick other targets, wait on
+// cooldowns), so the ratio is taken against kLearnBase of it.
+// kDeathScale: enemy damage counts kDeathStep more per teammate lost in the last kDeathWindow
+// rounds (team deaths are shared through the status bytes, so the whole team turns careful).
+constexpr bool kLearnEnemy = false;
+constexpr float kLearnPrior = 2000.f;
+constexpr float kLearnBase = 0.55f;
+// kDeathScale, out of 140 against the v23 test build / Cassi & Issac / fishsim / hunter: 73/119/92/109
+// (base 70/115/92/109) (on); kLearnEnemy 73/115/94/103 (off).
+constexpr bool kDeathScale = true;
+constexpr float kDeathStep = 0.12f;
+constexpr int kDeathWindow = 200;
+constexpr float kMaxEnemyScale = 2.5f;
+// v24 against Inter Fish (0-5 again, 80 deaths to 2): outnumbered in 31 of 89 fights (lost 26),
+// and half our deaths with no teammate within 7 tiles, while all five of theirs held the cluster
+// field. kFieldCamp: a gem field (kFieldGroups+ cluster groups with kFieldGems+ gems within 7 of an
+// altar, or one cluster block of 100+ gems) in the middle or on our side becomes the team's camp:
+// its groups score kFieldBonus times more for the squad, and no solo job is taken outside it.
+// kStunDiscipline: a stun on an enemy that cannot move already (stunned) or cannot be stunned
+// (Marcella) is wasted: our three stunners used to fire together at the team's focus. Pure stuns
+// wait for another target or for the current stun to wear off; damaging stuns go to a free target
+// when there is one. (Their stun-immune Marcella killed 34 of ours in the v24 Inter Fish games.)
+constexpr bool kStunDiscipline = false;
+// Out of 140 (against the v25 test build / Cassi & Issac / fishsim / hunter): 70/120/92/111 against
+// 76/125/95/108: "cannot move" probably also shows on an enemy that has used its move this turn,
+// not only a stunned one. kStunOverlap off keeps only the immunity part.
+constexpr bool kStunOverlap = true;
+// kStunChain: our two stun spells (Tavi's damaging stun, Ryth's area stun) used to fire together.
+// With the other within 6 tiles, Tavi stuns only on even rounds and Ryth only on odd ones, so the
+// 1-turn stuns land on consecutive turns. kCombatDash: dashes (Vendetta, Vesper Vale; 2 tiles)
+// were used only to travel. Now Vendetta dashes in to finish an enemy just out of reach that one
+// turn's hits can kill (her kill reset makes the dash ready again), and anyone in danger while
+// retreating dashes to the reachable tile furthest from the enemies.
+// Out of 140 against the v26 test build / Cassi & Issac / fishsim / hunter (base 70/121/93/121):
+// kStunChain 62/121/105/111 (it also holds when the partner's stun is on cooldown, which the team
+// cannot see); kCombatDash 70/122/96/118 (fires 1-13 times a game); kFightBuild 67/119/103/117. Off.
+constexpr bool kFightBuild = false;  // Durability first in every build (see build_for)
+constexpr bool kStunChain = false;
+constexpr bool kCombatDash = false;
+constexpr float kDashKill = 2.f;  // finish when its health is under this many of our hits
+// Fields on 8 of 70 maps. Out of 140 against the v24 test build / Cassi & Issac / fishsim / hunter:
+// 71/125/92/107; on the field maps 11 of 16 head to head, 11 against 8 of 16 against fishsim (on).
+constexpr bool kFieldCamp = true;
+constexpr int kFieldGroups = 3;
+constexpr int kFieldGems = 50;
+constexpr float kFieldBonus = 3.f;
 // Scout wards. Ladder teams re-place their ward about every 12 rounds (a quarter of the time in a
 // bush) and land the first hit in more fights; ours sat at old capture spots (every 68 rounds,
 // 1% in bushes). Whenever the ward is ready and we have moved on, re-place it within 2 tiles,
@@ -172,7 +239,11 @@ constexpr bool kHoldCapture = true;
 // Locally her share of our gems went from 23% to 48% and her gold by round 600 from 530 to
 // 1,319: 457 against 434 wins out of 560, 46/80 against v7 and v6, though farming with no
 // enemy around is 7% slower (more walking to rewards and the altar).
-constexpr bool kMarcellaBank = false;
+// v26: Inter Fish's Marcella banks ~40% of their gems (2 gold each, spent on Focus) and killed 34 of
+// ours in 5 games. Out of 140: 90 against the v25 test build, 121/93/121 against Cassi & Issac /
+// fishsim / hunter (without: 76, 125/95/108); farming 1,119 against 1,039 rounds to 1,000 gems
+// (on). Banking at 30 gems 74/123/94/115 and a reach of 5 62/120/98/119 against it.
+constexpr bool kMarcellaBank = true;
 constexpr int kBankerReach = 8;
 constexpr int kBankerClaim = 14;
 constexpr int kBankerCarry = 20;
@@ -442,9 +513,23 @@ const std::vector<BuildStep>& build_for(bc::champion_type t) {
     // Spell damage scales with Focus and lands instantly at range 4: stacked Focus
     // turns a caster's spell into a one-shot, which wins champion fights.
     static const std::vector<BuildStep> caster{{it::durability_shard_of_health, 5}, {it::bruiser_shard_of_focus, 1 << 30}};
+    // kFightBuild: Durability (10% less damage from everything) first, same stats, farming emblems after.
+    static const std::vector<BuildStep> tank_f{{it::durability_shard_of_health, 5},
+                                               {it::jungle_shard_of_health, 5},
+                                               {it::monster_shard_of_strength, 5},
+                                               {it::bruiser_shard_of_strength, 1 << 30}};
+    static const std::vector<BuildStep> earner_f{{it::durability_shard_of_strength, 5},
+                                                 {it::treasure_shard_of_strength, 5},
+                                                 {it::monster_shard_of_strength, 5},
+                                                 {it::jungle_shard_of_health, 5},
+                                                 {it::bruiser_shard_of_strength, 1 << 30}};
+    static const std::vector<BuildStep> fighter_f{{it::durability_shard_of_strength, 5},
+                                                  {it::monster_shard_of_strength, 5},
+                                                  {it::jungle_shard_of_health, 5},
+                                                  {it::bruiser_shard_of_strength, 1 << 30}};
     if (t == bc::champion_type::marcella || t == bc::champion_type::heart_of_ruin) return caster;
-    if (tank_type(t)) return tank;
-    return bc::champion{t}.base_stats().base_attack_range > 1 ? earner : fighter;
+    if (tank_type(t)) return kFightBuild ? tank_f : tank;
+    return bc::champion{t}.base_stats().base_attack_range > 1 ? (kFightBuild ? earner_f : earner) : (kFightBuild ? fighter_f : fighter);
 }
 
 struct DpsModel {
@@ -1250,6 +1335,71 @@ bool Bot::wait_for_escort() {
     return true;
 }
 
+const vec2* Bot::field() {
+    if (!kFieldCamp) return nullptr;
+    if (!field_ready_) {
+        const auto& W = world();
+        if (!W.has_field(W.spawn_poi)) return nullptr;  // reachability needs the walk from spawn
+        field_ready_ = true;
+        int best = 0;
+        auto consider = [&](vec2 centre) {
+            if (altar_exposure(centre) > 1) return;
+            int gems = 0, groups = 0;
+            for (const auto& g : W.groups)
+                if (g.harmless && g.gems > 0 && !g.unreachable && cheb(g.anchor, centre) <= 7 && home_dist(g) != kUnreached) {
+                    gems += g.gems;
+                    ++groups;
+                }
+            const bool ok = (groups >= kFieldGroups && gems >= kFieldGems) || gems >= 100;
+            if (ok && gems > best) {
+                best = gems;
+                field_centre_ = centre;
+                field_gems_ = gems;
+            }
+        };
+        for (auto a : W.altars) consider(a);
+        for (const auto& g : W.groups)
+            if (g.harmless && g.gems >= 100) consider(g.anchor);
+        LOG("FIELD " << bc::to_string(type_) << " centre " << bc::to_string(field_centre_) << " gems " << field_gems_);
+    }
+    return field_gems_ > 0 ? &field_centre_ : nullptr;
+}
+
+bool Bot::in_field(vec2 p) {
+    const vec2* f = field();
+    return f && cheb(*f, p) <= 8;
+}
+
+bool Bot::unsafe_alone(Group& g) {
+    // Ground the enemy holds: our last death or a recent sighting nearby, or the contested middle
+    // while they are about. Somewhere to go as a squad, not alone.
+    enemy_side(g);  // works out g.contested
+    if (round_ - death_round_ <= 150 && cheb(death_pos_, g.anchor) <= 8) return true;
+    for (const auto& s : sightings_)
+        if (round_ - s.round <= kSoloDangerRounds && cheb(s.pos, g.anchor) <= 8) return true;
+    return g.contested && enemy_recent(30);
+}
+
+bool Bot::held_altar_near(vec2 p) const {
+    // A middle or enemy-side altar beside p where we have seen them lately (worked out once a turn:
+    // checked for every camp the squad scores).
+    if (held_round_ != round_) {
+        held_round_ = round_;
+        held_altars_.clear();
+        for (auto a : world().altars) {
+            if (altar_exposure(a) == 0) continue;
+            for (const auto& s : sightings_)
+                if (round_ - s.round <= 60 && cheb(s.pos, a) <= 8) {
+                    held_altars_.push_back(a);
+                    break;
+                }
+        }
+    }
+    for (auto a : held_altars_)
+        if (cheb(a, p) <= 6) return true;
+    return false;
+}
+
 int Bot::squad_dist(const Group& g) {
     // The longest walk among living teammates not heading home: the squad starts when they arrive.
     auto& W = world();
@@ -1340,6 +1490,13 @@ void Bot::play_turn() {
     mark("observe");
     observe(me);
     damage_taken_ = last_hp_round_ == round_ - 1 ? std::max(0.f, last_hp_ - hp_) : 0.f;
+    if (kLearnEnemy && last_expect_round_ == round_ - 1 && last_expect_ > 0 && incoming_camp_damage(pos_) <= 0) {
+        dmg_seen_ += damage_taken_;
+        dmg_expected_ += last_expect_;
+    }
+    last_expect_ = 0;
+    if ((kLearnEnemy || kDeathScale) && round_ % 250 == 0)
+        LOG("SCALE r" << round_ << " " << bc::to_string(type_) << " seen " << dmg_seen_ << " expected " << dmg_expected_ << " scale " << enemy_scale());
     if (damage_taken_ > 0) last_hurt_round_ = round_;
     last_hp_ = hp_;
     last_hp_round_ = round_;
@@ -1490,14 +1647,119 @@ void Bot::fire_spells(bool retreating) {
         const bool offensive = sp.kind == bc::ability_kind::damage || sp.kind == bc::ability_kind::cc || sp.kind == bc::ability_kind::aoe_damage;
         if (!offensive || (sp.exclusive && (retreating || moved_))) continue;
         const SeenChamp* best = nullptr;
+        const bool stun = kStunDiscipline && sp.kind == bc::ability_kind::cc;
+        if ((sp.kind == bc::ability_kind::cc || (sp.kind == bc::ability_kind::aoe_damage && sp.duration > 0)) && !stun_turn()) continue;
         for (const auto& e : enemies_) {
             if (world().enemy_spawn.get(e.pos) || cheb(e.pos, pos_) > static_cast<int>(sp.range)) continue;
+            if (stun && stun_wasted(e)) continue;
             const bool focused = slots_ <= 5 && enemy_id(e) == comms_.focus();
             const bool better = best && better_target(e, *best);
             if (!best || focused || (better && !(slots_ <= 5 && enemy_id(*best) == comms_.focus()))) best = &e;
         }
         if (best && spell_ready(i)) cast_on(sp, best->handle);
     }
+}
+
+bool stun_immune(bc::champion_type t) {
+    static std::array<int, 16> cache{};  // 0 unknown, 1 no, 2 yes
+    auto& c = cache[static_cast<int>(t) & 15];
+    if (c == 0) c = bc::champion{t}.passive() == bc::passive_type::stun_immunity ? 2 : 1;
+    return c == 2;
+}
+
+bool Bot::stun_wasted(const SeenChamp& e) const {
+    if (stun_immune(e.type)) return true;
+    if (!kStunOverlap) return false;
+    try {
+        const auto st = e.handle.state();
+        // Channelling a tribute or a recall also stops movement, but a stun still lands then.
+        if (st.contains(bc::champion_state::submitting_gems) || st.contains(bc::champion_state::recalling)) return false;
+        return !st.contains(bc::champion_state::can_move);
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+bool Bot::stun_turn() const {
+    if (!kStunChain) return true;
+    const int mine = type_ == bc::champion_type::tavi ? 0 : type_ == bc::champion_type::ryth ? 1 : -1;
+    if (mine < 0) return true;
+    for (const auto& a : allies_seen_)
+        if ((a.type == bc::champion_type::tavi || a.type == bc::champion_type::ryth) && a.type != type_ && cheb(a.pos, pos_) <= 6)
+            return round_ % 2 == mine;
+    return true;
+}
+
+std::vector<vec2> Bot::dash_landings() {
+    // Tiles a 2-tile dash can reach along free tiles.
+    std::vector<vec2> out;
+    load_occupancy();
+    for (auto d1 : kDirs) {
+        const vec2 a = pos_ + d1;
+        if (!free_tile(a)) continue;
+        out.push_back(a);
+        for (auto d2 : kDirs) {
+            const vec2 b = a + d2;
+            if (b == pos_ || !free_tile(b)) continue;
+            out.push_back(b);
+        }
+    }
+    return out;
+}
+
+bool Bot::dash_toward(bc::champion& me, vec2 target, int within) {
+    if (cast_done_ || !can_cast_) return false;
+    for (int i = 0; i < static_cast<int>(spells_.size()); ++i) {
+        auto& s = spells_[i];
+        if (s.kind != bc::ability_kind::dash || s.modifier > 0 || !spell_ready(i)) continue;
+        vec2 best{-1, -1};
+        int best_d = cheb(pos_, target);
+        for (auto t : dash_landings())
+            if (cheb(t, target) <= within && cheb(t, target) < best_d + 1) {
+                best_d = cheb(t, target);
+                best = t;
+            }
+        if (best.x < 0) return false;
+        if (cast_at(s, best)) {
+            pos_ = best;
+            return true;
+        }
+        return false;
+    }
+    (void)me;
+    return false;
+}
+
+bool Bot::dash_away(bc::champion& me, const std::vector<std::pair<vec2, int>>& threats) {
+    if (cast_done_ || !can_cast_ || threats.empty()) return false;
+    auto safety = [&](vec2 t) {
+        int s = 1000;
+        for (const auto& [p, r] : threats) s = std::min(s, cheb(t, p) - r);
+        return s;
+    };
+    for (int i = 0; i < static_cast<int>(spells_.size()); ++i) {
+        auto& s = spells_[i];
+        if (s.kind != bc::ability_kind::dash || s.modifier > 0 || !spell_ready(i)) continue;
+        const auto& W = world();
+        vec2 best{-1, -1};
+        int best_s = safety(pos_), best_home = cheb(pos_, W.ally_centre);
+        for (auto t : dash_landings()) {
+            const int sa = safety(t), home = cheb(t, W.ally_centre);
+            if (sa > best_s || (sa == best_s && best.x >= 0 && home < best_home)) {
+                best_s = sa;
+                best_home = home;
+                best = t;
+            }
+        }
+        if (best.x < 0 || best_s <= safety(pos_)) return false;
+        if (cast_at(s, best)) {
+            pos_ = best;
+            return true;
+        }
+        return false;
+    }
+    (void)me;
+    return false;
 }
 
 bool Bot::harmless_on_spawn(const SeenChamp& e) const {
@@ -1520,7 +1782,7 @@ bool Bot::fight_enemies(bc::champion& me) {
             ally_dps += a.dps;
             ally_hp += a.hp;
         }
-    float enemy_dps = 0, enemy_hp = 0, threat = 0, burst = 0;
+    float enemy_dps = 0, enemy_hp = 0, threat = 0, burst = 0, expect = 0;
     const SeenChamp* nearest = nullptr;
     int nearest_d = 1000;
     // With the burst model we also look at groups 8-10 tiles out, to leave before they arrive.
@@ -1532,13 +1794,30 @@ bool Bot::fight_enemies(bc::champion& me) {
             enemy_dps += e.dps;
             enemy_hp += e.hp;
         }
-        if (d <= e.range + 1) threat += e.dps;
+        if (d <= e.range + 1) {
+            threat += e.dps;
+            // Our share when it can also hit teammates beside us.
+            if (kLearnEnemy) {
+                int others = 0;
+                for (const auto& a : allies_seen_)
+                    if (cheb(a.pos, e.pos) <= e.range + 1) ++others;
+                expect += e.dps / static_cast<float>(1 + others);
+            }
+        }
         // What could land on us before our next turn if we stay here.
         if (d <= e.reach) burst += e.burst;
         if (d < nearest_d) {
             nearest_d = d;
             nearest = &e;
         }
+    }
+    if (kLearnEnemy || kDeathScale) {
+        last_expect_ = expect;
+        last_expect_round_ = round_;
+        const float k = enemy_scale();
+        enemy_dps *= k;
+        threat *= k;
+        burst *= k;
     }
     if (!nearest) return false;
     if (kInterceptTribute && intercept_tribute(me)) return true;
@@ -1630,7 +1909,12 @@ bool Bot::fight_enemies(bc::champion& me) {
         const SeenChamp& e = *pick;
         bool acted = false;
         if (kLeash && cheb(e.pos, pos_) > range_ && in_their_third(e.pos)) return false;
-        if (cheb(e.pos, pos_) > range_) acted = approach_unit(me, e.pos, range_);
+        // Just out of reach and one turn of hits from dying: dash in (melee only; whether a ranged
+        // champion may shoot after a dash is untested).
+        if (kCombatDash && !ranged_ && can_attack_ && cheb(e.pos, pos_) > range_ + 1 && cheb(e.pos, pos_) <= range_ + 2 &&
+            e.hp <= strength_ * kDashKill && dash_toward(me, e.pos, range_))
+            acted = true;
+        if (cheb(e.pos, pos_) > range_) acted |= approach_unit(me, e.pos, range_);
         if (cheb(e.pos, pos_) <= range_) {
             use_combat_spells(me, nullptr, &e);
             acted |= attack_target(me, e.handle, e.pos, e.hp);
@@ -1691,6 +1975,10 @@ bool Bot::fight_enemies(bc::champion& me) {
         // Shoot first if we cannot get away anyway, then run toward home.
         use_combat_spells(me, nullptr, target);
         set_status(Task::other, kHome);
+        if (kCombatDash && in_danger && dash_away(me, threats)) {
+            mark("dash-away");
+            return true;
+        }
         if (step_away(me, threats)) return true;
         if (target && cheb(target->pos, pos_) <= range_) {
             attack_target(me, target->handle, target->pos, target->hp);
@@ -2117,7 +2405,20 @@ void Bot::use_combat_spells(bc::champion& me, const SeenCamp* camp, const SeenCh
         case bc::ability_kind::cc: {
             // Stuns are wasted on harmless or sleeping camps; damage spells are not.
             const bool stun_only = s.kind == bc::ability_kind::cc && s.modifier <= 0;
+            if (enemy && s.kind == bc::ability_kind::cc && !stun_turn() && cheb(enemy->pos, pos_) <= static_cast<int>(s.range)) break;
             if (enemy && cheb(enemy->pos, pos_) <= static_cast<int>(s.range)) {
+                if (kStunDiscipline && s.kind == bc::ability_kind::cc && stun_wasted(*enemy)) {
+                    // Another enemy in range takes it; a pure stun otherwise waits.
+                    const SeenChamp* other = nullptr;
+                    for (const auto& e : enemies_)
+                        if (&e != enemy && !world().enemy_spawn.get(e.pos) && cheb(e.pos, pos_) <= static_cast<int>(s.range) && !stun_wasted(e)) other = &e;
+                    if (other) {
+                        if (spell_ready(i)) cast_on(s, other->handle);
+                    } else if (!stun_only && spell_ready(i)) {
+                        cast_on(s, enemy->handle);
+                    }
+                    break;
+                }
                 if (spell_ready(i)) cast_on(s, enemy->handle);
             } else if (camp && cheb(camp->pos, pos_) <= static_cast<int>(s.range)) {
                 if (s.kind == bc::ability_kind::cc && (!camp->awake || camp->strength <= 0) && stun_only) break;
@@ -2127,6 +2428,7 @@ void Bot::use_combat_spells(bc::champion& me, const SeenCamp* camp, const SeenCh
             break;
         }
         case bc::ability_kind::aoe_damage: {
+            if (enemy && s.duration > 0 && !stun_turn() && cheb(enemy->pos, pos_) <= static_cast<int>(s.range)) break;
             if (enemy && cheb(enemy->pos, pos_) <= static_cast<int>(s.range)) {
                 if (spell_ready(i)) cast_on(s, enemy->handle);
             } else if (camp && cheb(camp->pos, pos_) <= static_cast<int>(s.range)) {
@@ -2542,12 +2844,19 @@ bool Bot::go_home(bc::champion& me, bool urgent) {
     return travel(me, W.spawn_poi);
 }
 
+float Bot::enemy_scale() const {
+    float k = 1.f;
+    if (kLearnEnemy) k = std::max(k, (dmg_seen_ + kLearnPrior * kLearnBase) / (dmg_expected_ * kLearnBase + kLearnPrior * kLearnBase));
+    if (kDeathScale) k = std::max(k, 1.f + kDeathStep * static_cast<float>(recent_team_deaths(kDeathWindow)));
+    return std::min(k, kMaxEnemyScale);
+}
+
 float Bot::tribute_threat() const {
     // Damage per round from enemies that can be on us within two steps.
     float threat = 0;
     for (const auto& e : enemies_)
         if (!world().enemy_spawn.get(e.pos) && cheb(e.pos, pos_) <= e.range + 2) threat += e.dps;
-    return threat;
+    return threat * enemy_scale();
 }
 
 bool Bot::abandon_tribute(bc::champion& me) {
@@ -2906,6 +3215,7 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
         auto& g = W.groups[gi];
         if (bc::fuel_remaining() < kSquadPlanFloor) break;
         if (g.unreachable || (g.harmless && !kSquadClusters) || g.id > kMaxTarget || g.id == exclude || g.state == GroupState::reward) continue;
+        if (g.harmless && bc::fuel_remaining() < kClusterPlanFloor) continue;
         if (g.id == other_party_target_) continue;
         if (round_ < avoid_until_[g.id & 63]) continue;
         if (comms_.claimed_by_other(slot_, Task::solo, g.id, slots_)) continue;
@@ -2931,7 +3241,9 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
         // Contested ground near the enemy spawn is riskier.
         if (enemy_side(g)) score *= enemy_side_factor(false);
         if (contested_now) score *= g.harmless ? kOpeningClusters : kOpeningContested;
+        if (kHoldMiddle && held_altar_near(g.anchor)) score *= kHoldBonus;
         if (kAltarZoneBias > 0) score *= altar_zone(g);
+        if (kFieldCamp && in_field(g.anchor)) score *= kFieldBonus;
         if (kMiddleBias > 0) {
             const vec2 mid{W.w / 2, W.h / 2};
             score *= 1.f + kMiddleBias * (1.f - static_cast<float>(cheb(g.anchor, mid)) / std::max(1, std::max(W.w, W.h) / 2));
@@ -2962,6 +3274,7 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
         float score = g.value(kGoldWeight) / group_rounds(g, team_dps, d);
         if (soft) score *= kOpeningClusters;
         if (kAltarZoneBias > 0) score *= altar_zone(g);
+        if (kFieldCamp && in_field(g.anchor)) score *= kFieldBonus;
         if (enemy_side(g)) score *= enemy_side_factor(false);
         score *= target_danger(g);
         if (score > best_score) {
@@ -3106,6 +3419,8 @@ void Bot::choose_task(bc::champion& me) {
             continue;
         if (bc::fuel_remaining() < kSoloPlanFloor) break;
         if (cheb(g.anchor, pos_) > 24) continue;
+        if (kSoloSafe && unsafe_alone(g)) continue;
+        if (kFieldCamp && field() && !in_field(g.anchor)) continue;
         // Fighting camps cost a distance field and a forecast each: only with fuel to spare.
         if (!g.harmless && (bc::fuel_remaining() < 35000 || !solo_camp_ok(g, my_dps))) continue;
         const int d = dist_to_group(g);
