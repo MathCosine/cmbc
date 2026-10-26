@@ -143,6 +143,7 @@ private:
     float danger_factor(vec2 p) const;
     float target_danger(Group& g);
     bool enemy_recent(int rounds) const { return round_ - last_enemy_round_ <= rounds; }
+    bool calm() const;
     int recent_team_deaths(int window) const;
     bool pressured() const;
     bool enemy_passive() const;
@@ -272,6 +273,7 @@ private:
     int banker_slot_ = -1;       // our Marcella's slot, if we drafted her
     int altar_wait_until_ = -1;  // enemies held the altar: farm until this round
     int escort_wait_ = 0;        // rounds this altar trip has waited for a teammate
+    bool bag_fight_ = false;     // this turn's fight is on a bag worth taking near an altar
     std::vector<bc::champion_type> ally_types_;  // champion type per slot
     int enemy_banked_ = 0;               // enemy team's turned-in gems as last seen
     int party_target_ = -1;              // second squad: the target its leader chose

@@ -255,6 +255,13 @@ constexpr int kWaitJobMin = 20;
 constexpr int kEscortRange = 12;
 constexpr int kEscortStretch = 10;  // the banker is this close to the altar
 constexpr int kEscortBag = 30;      // and carries at least this many gems
+// Escort only when the coast is not clear: with no enemy seen and no teammate lost in the last
+// kCalmRounds, banking trips go without escorts and without waiting for one. With no opponent at
+// all, escorting took 6.6% of champion rounds by round 500 and waiting for escorts 1%.
+// Out of 140: 75 against v20, 115 against a Cassi & Issac team (v20 120), 86 against fishsim
+// (v20 88); farming 1,059 against 1,136 rounds to 1,000 gems (391 against 361 gems by round 500).
+constexpr bool kCalmNoEscort = true;
+constexpr int kCalmRounds = 60;
 // Breach. On 02the-pack the only altar sits inside a ring of 48 wolves: our siege rules never
 // took the ring on, and neither side turned in a gem in 2,000 rounds. When no altar can be
 // reached past live camps, the squad kills only the camps on the shortest walk in (see
@@ -334,6 +341,17 @@ constexpr bool kAltarDefense = false;
 constexpr bool kWorthBag = false;
 constexpr float kBagFightEdge = 1.5f;
 constexpr int kBagWorthGems = 30;
+// Altar defense, more hands: kBagFocus off keeps the usual weakest-first targeting near altars
+// (only the chase changes); kBagCall makes a champion near such a bag call teammates from
+// kBagHelpRange (14 for other fights); kAltarGuards champions wait by the altar with kAltarGuard.
+// Out of 140 against v20 / a Cassi & Issac team / fishsim (v20: 70/120/88), all with altar
+// defense, an even fight and a 10-gem bag: alone 75/119/75; kBagFocus off 78/115/76; kBagCall
+// 73/117/74; altar zone 1.0 71/118/82; two altar guards 52/97/62 (3 bags killed near altars a
+// game against 1.9, but 15% less banked). All off.
+constexpr bool kBagFocus = true;
+constexpr bool kBagCall = false;
+constexpr int kBagHelpRange = 22;
+constexpr int kAltarGuards = 1;
 constexpr int kHomeDefenseRange = 12;
 constexpr bool kEngageFar = false;
 constexpr bool kLeash = true;
@@ -728,6 +746,8 @@ int Bot::recent_team_deaths(int window) const {
 
 bool Bot::pressured() const { return kPressureMode && recent_team_deaths(kPressureWindow) >= kPressureDeaths; }
 
+bool Bot::calm() const { return !enemy_recent(kCalmRounds) && recent_team_deaths(kCalmRounds) == 0; }
+
 bool Bot::enemy_passive() const { return round_ > 300 && !enemy_recent(250) && recent_team_deaths(400) == 0; }
 
 int Bot::carry_gems() const {
@@ -787,6 +807,7 @@ bool Bot::escort_banker(bc::champion& me) {
     // Walk with a teammate who is taking gems to an altar in the middle or on the enemy side,
     // when we are the nearest free teammate (the two nearest for the enemy side).
     if (task_ == Task::capture || hp_ < max_hp_ * 0.5f || on_spawn()) return false;
+    if (kCalmNoEscort && calm()) return false;
     const auto& W = world();
     for (int i = 0; i < slots_; ++i) {
         if (i == slot_) continue;
@@ -926,16 +947,18 @@ bool Bot::guard_altar(bc::champion& me) {
     // The guard: the first living champion in this order (tanks first).
     static constexpr std::array kGuardOrder{bc::champion_type::ryth, bc::champion_type::marcella, bc::champion_type::vendetta,
                                             bc::champion_type::tavi, bc::champion_type::vesper_vale};
-    int guard = -1;
+    // The guards: the first kAltarGuards living champions in this order.
+    int guards = 0;
+    bool me_guard = false;
     for (auto t : kGuardOrder) {
-        for (int i = 0; i < slots_ && i < static_cast<int>(ally_types_.size()); ++i)
+        for (int i = 0; i < slots_ && i < static_cast<int>(ally_types_.size()) && guards < kAltarGuards; ++i)
             if (ally_types_[i] == t && !slot_dead_[i] && !(comms_.slot(i).task == Task::other && comms_.slot(i).target == kHome)) {
-                guard = i;
+                ++guards;
+                if (i == slot_) me_guard = true;
                 break;
             }
-        if (guard >= 0) break;
     }
-    if (guard != slot_) return false;
+    if (!me_guard) return false;
     mark("guard-altar");
     if (cheb(pos_, altar) > 3) approach_unit(me, altar, 2);
     return true;
@@ -992,9 +1015,10 @@ bool Bot::answer_call(bc::champion& me) {
     for (int i = 0; i < slots_ && i < static_cast<int>(allies_.size()); ++i) {
         if (i == slot_) continue;
         const auto st = comms_.slot(i);
-        if (st.task != Task::other || st.target != kFight) continue;
+        if (st.task != Task::other || (st.target != kFight && st.target != kBagFight)) continue;
+        const int range = st.target == kBagFight ? kBagHelpRange : kHelpRange;
         for (const auto& a : allies_seen_)
-            if (a.handle == allies_[i] && cheb(a.pos, pos_) <= kHelpRange && cheb(a.pos, pos_) > 2 &&
+            if (a.handle == allies_[i] && cheb(a.pos, pos_) <= range && cheb(a.pos, pos_) > 2 &&
                 (!caller || cheb(a.pos, pos_) < cheb(caller->pos, pos_)))
                 caller = &a;
     }
@@ -1058,7 +1082,7 @@ bool Bot::near_contested_altar(vec2 p) const {
 
 bool Bot::better_target(const SeenChamp& e, const SeenChamp& than) const {
     // With altar defense alone, bags count only around a contested altar (where they come to bank).
-    if (kHuntBag || (kAltarDefense && (near_contested_altar(e.pos) || near_contested_altar(than.pos)))) {
+    if (kHuntBag || (kAltarDefense && kBagFocus && (near_contested_altar(e.pos) || near_contested_altar(than.pos)))) {
         // Carried gems change hands on the kill: weigh them against the health left to chew through.
         const float a = (e.gems + 10.f) / std::max(e.hp, 1.f), b = (than.gems + 10.f) / std::max(than.hp, 1.f);
         if (std::abs(e.gems - than.gems) >= 10) return a > b;
@@ -1303,7 +1327,7 @@ void Bot::act(bc::champion& me) {
     if (fight_enemies(me)) {
         // Tell the team (retreats already said "home").
         if (kCallHelp && !capturing_here() && !(comms_.slot(slot_).task == Task::other && comms_.slot(slot_).target == kHome))
-            set_status(Task::other, kFight);
+            set_status(Task::other, bag_fight_ ? kBagFight : kFight);
         return;
     }
     mark("help");
@@ -1471,6 +1495,10 @@ bool Bot::fight_enemies(bc::champion& me) {
             }
         return ehp / std::max(adps, 1.f) * kBagFightEdge <= ahp / std::max(edps, 1.f);
     };
+    bag_fight_ = false;
+    if (kBagCall && kWorthBag && kAltarDefense)
+        for (const auto& e : enemies_)
+            if (cheb(e.pos, pos_) <= 7 && worth_bag(e)) bag_fight_ = true;
 
     std::vector<std::pair<vec2, int>> threats;
     for (const auto& e : enemies_) {
@@ -2488,7 +2516,7 @@ bool Bot::tribute(bc::champion& me) {
             return false;
         }
     }
-    if (kBankEscort && !endgame && !wins && gems_ >= (kTeamBank ? kEscortBag / 2 : kEscortBag) && escort_wait_ < 8 && cheb(pos_, altar) <= 9 &&
+    if (kBankEscort && !endgame && !wins && !(kCalmNoEscort && calm()) && gems_ >= (kTeamBank ? kEscortBag / 2 : kEscortBag) && escort_wait_ < 8 && cheb(pos_, altar) <= 9 &&
         cheb(pos_, altar) > bc::constants::submit_gems_range && altar_exposure(altar) > 0) {
         // An altar in the middle: let the teammate walking with us catch up before going in.
         bool with = false, coming = false;
