@@ -261,6 +261,19 @@ constexpr bool kBreach = true;
 // farming 2% slower; engage far 56/113/82 (rushing enemies 7 tiles out splits the team): off.
 // Valuing gold at 0.08 instead of 0.15 (gems first): 67/113/85, with the other two 78/106/78: off.
 constexpr bool kCampWary = true;
+// v17 tests. Soft clusters: the soft opening also for gem and gold clusters (00lost-world: every
+// cluster is in the contested middle; the squad walked 42 tiles to a corner elk and our first
+// clear came at round 265, theirs at 31). Bag caution: with kBagCautionGems or more, do not
+// answer calls or join fights, and leave as soon as a fight looks lost (adgato-gemcombat4: 13
+// deaths with 21-56 gems each, 455 gems handed over). Early solo: in the first 300 rounds up to
+// half the team may farm clusters alone (they cleared 2-3.5x our camps by round 300).
+// Out of 140 (against v16 / a Cassi & Issac team / fishsim): soft clusters 68/113/81 with 11% more
+// gems by round 300 (167 against 151) and 1.4% faster farming; bag caution 71/108/83; both 69/113/80;
+// early solo 64/108/85 (off).
+constexpr bool kSoftClusters = true;
+constexpr bool kBagCaution = true;
+constexpr int kBagCautionGems = 30;
+constexpr bool kEarlySolo = false;
 constexpr bool kEngageFar = false;
 constexpr bool kLeash = true;
 constexpr int kEngageRange = 5;
@@ -907,6 +920,7 @@ bool Bot::peel_back(bc::champion& me, const SeenChamp* target) {
 bool Bot::answer_call(bc::champion& me) {
     // A teammate within kHelpRange is fighting: walk over until we can see the fight ourselves.
     if (hp_ < max_hp_ * 0.5f || (on_spawn() && hp_ < max_hp_ * 0.95f)) return false;
+    if (kBagCaution && gems_ >= kBagCautionGems) return false;  // bank it first
     const SeenChamp* caller = nullptr;
     for (int i = 0; i < slots_ && i < static_cast<int>(allies_.size()); ++i) {
         if (i == slot_) continue;
@@ -1266,7 +1280,9 @@ bool Bot::fight_enemies(bc::champion& me) {
     const float they_need = ally_hp / std::max(enemy_dps, 1.f);
     // Under pressure we stop taking even fights: those are the ones we kept losing.
     const bool losing = we_need > they_need * (pressured() ? 1.0f : 1.3f);
-    const bool clearly_losing = we_need > they_need * (pressured() ? 1.3f : 1.6f) || outnumbered;
+    // A bag worth guarding (it goes to whoever kills us): leave as soon as the fight looks lost.
+    const bool bag = kBagCaution && gems_ >= kBagCautionGems;
+    const bool clearly_losing = we_need > they_need * (bag ? 1.0f : pressured() ? 1.3f : 1.6f) || outnumbered;
 
     std::vector<std::pair<vec2, int>> threats;
     for (const auto& e : enemies_) {
@@ -1382,7 +1398,7 @@ bool Bot::fight_enemies(bc::champion& me) {
         // at it (one champion stood like this for 200+ rounds).
         return round_ - last_hurt_round_ <= 8;
     }
-    if (kJoinFights && !retreating && !in_danger) {
+    if (kJoinFights && !retreating && !in_danger && !bag) {
         // A teammate is in a fight: hit the enemy on it rather than keep farming or wait for an
         // enemy to walk into range (on 01elk-arena our Vesper Vale hit the elk while three of us died).
         const SeenChamp* help = nullptr;
@@ -2600,10 +2616,15 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
         if (bc::fuel_remaining() < 20000) break;
         if (!g.harmless || g.unreachable || g.id > kMaxTarget || g.id == exclude || g.state == GroupState::reward) continue;
         if (comms_.claimed_by_other(slot_, Task::solo, g.id, slots_)) continue;
-        if (opening_blocks(g, allow_contested)) continue;
+        bool soft = false;
+        if (opening_blocks(g, allow_contested)) {
+            if (!(kSoftClusters && g.contested)) continue;
+            soft = true;
+        }
         const int d = dist_to_group(g);
         if (d == kUnreached || !g.alive_by(round_ + d + 5)) continue;
         float score = g.value(kGoldWeight) / group_rounds(g, team_dps, d);
+        if (soft) score *= kOpeningContested;
         if (enemy_side(g)) score *= enemy_side_factor(false);
         score *= target_danger(g);
         if (score > best_score) {
@@ -2682,7 +2703,8 @@ void Bot::choose_task(bc::champion& me) {
     if (kWaitJobs && squad >= 0 && W.groups[squad].state == GroupState::respawning)
         squad_wait = W.groups[squad].respawn_round - round_ - dist_to_group(W.groups[squad]);
     const bool waiting = squad_wait > kWaitJobMin;
-    const bool may_solo = waiting || solos < std::max(1, active / 3) || squad < 0;
+    const bool early = kEarlySolo && round_ < 300;
+    const bool may_solo = waiting || solos < std::max(1, early ? active / 2 : active / 3) || squad < 0;
     const float my_dps = dps_of(type_, strength_, focus_);
     const auto order = nearest_groups();
     int solo = -1;
@@ -2693,7 +2715,11 @@ void Bot::choose_task(bc::champion& me) {
         if (g.unreachable || g.id > kMaxTarget || g.state == GroupState::reward || g.id == squad) continue;
         if (!g.harmless && !kSoloCamps && !waiting) continue;
         if (round_ < avoid_until_[g.id & 63]) continue;
-        if (opening_blocks(g, false)) continue;
+        bool soft = false;
+        if (opening_blocks(g, false)) {
+            if (!(kSoftClusters && g.harmless && g.contested)) continue;
+            soft = true;
+        }
         if (comms_.claimed_by_other(slot_, Task::solo, g.id, slots_) ||
             comms_.claimed_by_other(slot_, Task::capture, g.id, slots_))
             continue;
@@ -2707,6 +2733,7 @@ void Bot::choose_task(bc::champion& me) {
         // A side job has to be done (there, clear, capture, back) before the squad's camp returns.
         if (waiting && 2 * d + forecast(g, my_dps).rounds + kCaptureRounds > squad_wait) continue;
         float score = g.value(kGoldWeight) / (group_rounds(g, my_dps, d) + heal_rounds(g, my_dps, hp_));
+        if (soft) score *= kOpeningContested;
         if (enemy_side(g)) score *= enemy_side_factor(true);
         score *= target_danger(g);
         if (score > solo_score) {
