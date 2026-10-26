@@ -93,7 +93,11 @@ private:
     bool enemy_side(Group& g);
     std::uint16_t dist_from_me(vec2 p);
     bool engage_ready(const Group& g);
-    void team_power(float& dps, float& hp, int& active, bool include_home = false) const;
+    void team_power(float& dps, float& hp, int& active, bool include_home = false, int party = -1) const;
+    bool split_active() const;
+    int party_of(int slot) const;
+    int party_b_target() const;
+    int my_party_target() const;
 
     // Actions.
     bool attack_target(bc::champion& me, const bc::unit& target, vec2 target_pos, float target_hp);
@@ -130,6 +134,7 @@ private:
     bool blocks_altar(const Group& g) const;
     bool any_altar_open() const;
     float heal_rounds(const Group& g, float dps, float hp);
+    int home_dist(const Group& g) const;
     float siege_rounds(const Group& g, float team_dps, float team_hp, bool unlocks);
     void set_status(Task task, int target);
 
@@ -264,5 +269,8 @@ private:
     int escort_wait_ = 0;        // rounds this altar trip has waited for a teammate
     std::vector<bc::champion_type> ally_types_;  // champion type per slot
     int enemy_banked_ = 0;               // enemy team's turned-in gems as last seen
+    int party_target_ = -1;              // second squad: the target its leader chose
+    int other_party_target_ = -1;        // a camp the other squad is on (skip it when choosing)
+    bool choosing_small_ = false;        // choosing for the second squad: no sieges
     int enemy_banked_round_ = -1000;     // last round that total went up
 };

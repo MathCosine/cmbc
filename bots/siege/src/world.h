@@ -34,6 +34,7 @@ struct Group {
     int poi = -1;
     std::vector<int> by_strength;  // camp indices, strongest first
     int side = -1;                 // 1 when closer to the enemy spawn; -1 until known
+    int home = -1;                 // walking distance from our spawn, cached (-1 until known)
     bool contested = false;        // about as far from the enemy spawn as from ours
 
     // Knowledge, refreshed whenever the group is in this champion's vision.

@@ -274,6 +274,24 @@ constexpr bool kSoftClusters = true;
 constexpr bool kBagCaution = true;
 constexpr int kBagCautionGems = 30;
 constexpr bool kEarlySolo = false;
+// v18, from the v17 scrim on 00corners (46 camp clears to their 92; in a local replay every farming
+// champion had the same target in 72% of rounds, walking 36% of the time and waiting beside
+// respawning camps 8%): two squads. With 4+ champions the last two slots form a second squad with
+// its own target, one the two of them can clear without a siege, never the main squad's; its
+// leader announces it in its status byte and the partner follows. Either squad short of two
+// living members merges back. Middle bias: camps nearer the middle of the map score up to
+// kMiddleBias more (the best camps are often there).
+// Two squads: out of 140, 50 against v17, 100 against 113 against a Cassi & Issac team, 63 against
+// 80 against fishsim, 17% fewer gems by round 800 on big maps (more small camps, slower big ones,
+// lost fights): off. Middle bias 0.3: 70, 115, 82, farming 1.8% faster (1,160 against 1,181
+// rounds to 1,000 gems), 5-6% more gems on big and ladder maps: on.
+constexpr bool kTwoSquads = false;
+constexpr float kMiddleBias = 0.3f;
+// Refined fight order (code review): join a teammate's fight only with nothing in reach of our own
+// (walking toward one cost a ranged champion its shot), answer calls only after stepping out of
+// camps' reach, and only when the caller is a short walk away (not just across a wall). Out of 140:
+// 64 against v17, 115 against a Cassi & Issac team, 87 against fishsim (68/115/84 without): off.
+constexpr bool kRefineFight = false;
 constexpr bool kEngageFar = false;
 constexpr bool kLeash = true;
 constexpr int kEngageRange = 5;
@@ -932,6 +950,8 @@ bool Bot::answer_call(bc::champion& me) {
                 caller = &a;
     }
     if (!caller) return false;
+    // Straight-line distance can be across a wall: a short walk only.
+    if (kRefineFight && dist_from_me(caller->pos) > kHelpRange + 6) return false;
     mark("answer-call");
     return approach_unit(me, caller->pos, 2);
 }
@@ -940,6 +960,45 @@ bool Bot::in_their_third(vec2 p) const {
     const auto& W = world();
     const int mine = cheb(p, W.ally_centre), theirs = cheb(p, W.enemy_centre);
     return theirs * 2 < mine;
+}
+
+bool Bot::split_active() const {
+    // Two squads: both members of the second alive and at least two left in the first.
+    if (!kTwoSquads || slots_ < 4 || slot_ < 0) return false;
+    int a = 0, b = 0;
+    for (int i = 0; i < slots_; ++i) {
+        const auto s = comms_.slot(i);
+        if (i != slot_ && s.task == Task::other && s.target == kDead) continue;
+        if (i >= slots_ - 2) ++b;
+        else ++a;
+    }
+    return b == 2 && a >= 2;
+}
+
+int Bot::party_of(int slot) const { return split_active() && slot >= slots_ - 2 ? 1 : 0; }
+
+int Bot::party_b_target() const {
+    // What the second squad's leader is farming (its status byte), or -1.
+    const auto ls = comms_.slot(slots_ - 2);
+    return ls.task == Task::farm ? ls.target : -1;
+}
+
+int Bot::my_party_target() const {
+    if (!split_active() || party_of(slot_) == 0) return comms_.squad_target();
+    if (slot_ == slots_ - 2) return party_target_ >= 0 ? party_target_ : comms_.squad_target();
+    const int t = party_b_target();
+    return t >= 0 ? t : party_target_;
+}
+
+int Bot::home_dist(const Group& g) const {
+    // Walking distance from our spawn to the group never changes. Looking it up at the anchor (a
+    // camp tile, which the field treats as a wall) searched the tiles around it on every call:
+    // about 1,000 fuel per group per plan on 02harvest, most of the planning cost.
+    if (g.home >= 0) return g.home;
+    auto& W = world();
+    const int d = W.dist(W.spawn_poi, g.anchor, 20000);
+    if (d != kUnreached || W.has_field(W.spawn_poi)) const_cast<Group&>(g).home = d;
+    return d;
 }
 
 bool Bot::capturing_here() const {
@@ -1141,11 +1200,13 @@ void Bot::act(bc::champion& me) {
         return;
     }
     mark("help");
-    if (kCallHelp && answer_call(me)) return;
+    if (kCallHelp && !kRefineFight && answer_call(me)) return;
     mark("flee");
     if (flee_camps(me)) return;
     mark("retreat");
     if (retreat_from_camps(me)) return;
+    // Out of the camps' reach first, then go and help.
+    if (kCallHelp && kRefineFight && answer_call(me)) return;
     // A big bag is a target: bank it before picking another fight (one champion who
     // captured 193 gems alone died seven rounds later and handed them over).
     if (kSmallBags && gems_ >= kBigBag && incoming_camp_damage(pos_) <= 0) {
@@ -1398,7 +1459,7 @@ bool Bot::fight_enemies(bc::champion& me) {
         // at it (one champion stood like this for 200+ rounds).
         return round_ - last_hurt_round_ <= 8;
     }
-    if (kJoinFights && !retreating && !in_danger && !bag) {
+    if (kJoinFights && !retreating && !in_danger && !bag && !(kRefineFight && target)) {
         // A teammate is in a fight: hit the enemy on it rather than keep farming or wait for an
         // enemy to walk into range (on 01elk-arena our Vesper Vale hit the elk while three of us died).
         const SeenChamp* help = nullptr;
@@ -2323,6 +2384,7 @@ bool Bot::tribute(bc::champion& me) {
             drop_ward(me);
             task_ = Task::farm;
             target_ = -1;
+            escort_wait_ = 0;  // the next trip waits for its escort again
             return true;
         } catch (const std::exception&) {
             // Locked: attack the enemy's lock. Both teams can lock the same altar, and
@@ -2487,11 +2549,13 @@ bool Bot::enemy_side(Group& g) {
     return g.side == 1;
 }
 
-void Bot::team_power(float& dps, float& hp, int& active, bool include_home) const {
+void Bot::team_power(float& dps, float& hp, int& active, bool include_home, int party) const {
     dps = 0;
     hp = 0;
     active = 0;
+    const bool split = party >= 0 && split_active();
     for (int i = 0; i < slots_; ++i) {
+        if (split && party_of(i) != party) continue;
         const auto s = comms_.slot(i);
         // Dead, recalling or shopping teammates will not be at the fight soon.
         if (i != slot_ && s.task == Task::other && (s.target == kDead || (s.target == kHome && !include_home))) continue;
@@ -2528,7 +2592,7 @@ float Bot::heal_rounds(const Group& g, float dps, float hp) {
     // Rounds spent getting the damage back: a trip home and back per team's worth of health.
     if (g.harmless) return 0;
     auto& W = world();
-    const int home = W.dist(W.spawn_poi, g.anchor, 20000);
+    const int home = home_dist(g);
     if (home == kUnreached) return 0;
     return kHealCost * forecast(g, dps).damage / std::max(hp, 1.f) * (2.f * home + 10.f);
 }
@@ -2545,7 +2609,7 @@ float Bot::siege_rounds(const Group& g, float team_dps, float team_hp, bool unlo
     // and turned in nothing all game while the other team banked from round 885).
     if (trips > (unlocks ? (kUnlockAnyTrips ? 1e9f : kMaxUnlockTrips) : kMaxTrips)) return -1;
     auto& W = world();
-    const int home = W.dist(W.spawn_poi, g.anchor, 20000);
+    const int home = home_dist(g);
     if (home == kUnreached) return -1;
     return (std::ceil(trips) - 1) * (2.f * home + 15.f);
 }
@@ -2578,6 +2642,7 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
         auto& g = W.groups[gi];
         if (bc::fuel_remaining() < 20000) break;
         if (g.unreachable || g.harmless || g.id > kMaxTarget || g.id == exclude || g.state == GroupState::reward) continue;
+        if (g.id == other_party_target_) continue;
         if (round_ < avoid_until_[g.id & 63]) continue;
         if (comms_.claimed_by_other(slot_, Task::solo, g.id, slots_)) continue;
         const int d = dist_to_group(g);
@@ -2594,13 +2659,17 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
             contested_now = true;
         }
         const float extra = siege_rounds(g, team_dps, team_hp, unlocks);
-        if (extra < 0) continue;
+        if (extra < 0 || (choosing_small_ && extra > 0)) continue;
         if (!g.alive_by(round_ + d + respawn_wait)) continue;
         float score = (g.value(kGoldWeight) + (unlocks ? 1000.f : 0.f)) /
                       (group_rounds(g, team_dps, d) + extra + heal_rounds(g, team_dps, team_hp));
         // Contested ground near the enemy spawn is riskier.
         if (enemy_side(g)) score *= enemy_side_factor(false);
         if (contested_now) score *= kOpeningContested;
+        if (kMiddleBias > 0) {
+            const vec2 mid{W.w / 2, W.h / 2};
+            score *= 1.f + kMiddleBias * (1.f - static_cast<float>(cheb(g.anchor, mid)) / std::max(1, std::max(W.w, W.h) / 2));
+        }
         score *= target_danger(g);
         if (score > best_score) {
             best_score = score;
@@ -2615,6 +2684,7 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
         auto& g = W.groups[gi];
         if (bc::fuel_remaining() < 20000) break;
         if (!g.harmless || g.unreachable || g.id > kMaxTarget || g.id == exclude || g.state == GroupState::reward) continue;
+        if (g.id == other_party_target_) continue;
         if (comms_.claimed_by_other(slot_, Task::solo, g.id, slots_)) continue;
         bool soft = false;
         if (opening_blocks(g, allow_contested)) {
@@ -2648,10 +2718,44 @@ void Bot::local_power(float& dps, float& hp) const {
 void Bot::choose_task(bc::champion& me) {
     (void)me;
     auto& W = world();
+    const int previous = target_;
+    const bool split = split_active();
+    if (split && party_of(slot_) == 1) {
+        // Second squad: the leader keeps its target until it is gone; the partner follows it.
+        float pdps = 0, php = 0;
+        int members = 0;
+        team_power(pdps, php, members, true, 1);
+        int t = my_party_target();
+        if (t >= static_cast<int>(W.groups.size())) t = -1;
+        if (t >= 0) {
+            auto& g = W.groups[t];
+            const bool gone = g.state == GroupState::reward || (g.state == GroupState::respawning && g.respawn_round > round_ + 25);
+            const bool too_strong = !g.harmless && siege_rounds(g, pdps * kFightEfficiency, php, false) != 0;
+            const bool blocked = round_ < avoid_until_[t & 63] || (dist_to_group(g) == kUnreached && g.unreachable);
+            const bool stalled_here = target_ == t && wait_rounds_ > 25 && !g.awake;
+            if (stalled_here) avoid_until_[t & 63] = round_ + 80;
+            if (gone || too_strong || blocked || stalled_here || t == comms_.squad_target()) t = -1;
+        }
+        if (t < 0 && bc::fuel_remaining() > 30000) {
+            other_party_target_ = comms_.squad_target();
+            choosing_small_ = true;
+            t = choose_squad_target(pdps, php, comms_.squad_target(), round_ >= kOpeningRounds);
+            choosing_small_ = false;
+            other_party_target_ = -1;
+        }
+        party_target_ = t;
+        task_ = Task::farm;
+        target_ = t >= 0 ? t : comms_.squad_target();
+        plan_round_ = round_;
+        if (target_ != previous) wait_rounds_ = 0;
+        return;
+    }
     float team_dps = 0, team_hp = 0;
     int active = 0;
-    team_power(team_dps, team_hp, active);
-    const int previous = target_;
+    team_power(team_dps, team_hp, active, false, split ? 0 : -1);
+    // The second squad following ours (nothing of its own to do) is not "its" camp.
+    const int b_target = split ? party_b_target() : -1;
+    other_party_target_ = b_target != comms_.squad_target() ? b_target : -1;
 
     // Validate or replace the shared squad target. A squad that has waited too long
     // without enough people picks something the champions actually present can clear.
@@ -2668,7 +2772,7 @@ void Bot::choose_task(bc::champion& me) {
         // teammates popping home to shop must not send the squad across the map.
         float living_dps = 0, living_hp = 0;
         int living = 0;
-        team_power(living_dps, living_hp, living, true);
+        team_power(living_dps, living_hp, living, true, split ? 0 : -1);
         const bool unlocks = blocks_altar(g) && !any_altar_open();
         const bool walled = dist_to_group(g) == kUnreached && g.unreachable;
         const bool stale = walled || g.state == GroupState::reward ||
@@ -2681,6 +2785,7 @@ void Bot::choose_task(bc::champion& me) {
         const bool deadly = kDangerMemory && !g.awake && !unlocks && danger_factor(g.anchor) < 0.35f;
         if (deadly) avoid_until_[squad & 63] = round_ + 60;
         if ((stale || stalled || blocked_for_me || deadly) && !breaching) squad = -1;
+        if (split && squad == other_party_target_ && !breaching) squad = -1;
     }
     if (squad < 0 && bc::fuel_remaining() > 30000) {
         float dps = team_dps, hp = team_hp;
@@ -2776,7 +2881,7 @@ bool Bot::farm(bc::champion& me) {
         const auto& g = W.groups[target_];
         if (!g.alive_by(round_ + 25) || g.state == GroupState::reward) replan = true;
         // Follow the squad when someone moved it.
-        if (task_ == Task::farm && target_ != comms_.squad_target()) replan = true;
+        if (task_ == Task::farm && target_ != my_party_target()) replan = true;
         if (wait_rounds_ > kStallRounds && !g.awake) replan = true;
         // A solo target we have waited at this long without a fight is not working out
         // (unseen camps, an unreachable tile): try something else for a while.
