@@ -28,6 +28,7 @@ struct SeenChamp {
     int gems;
     float burst = 0;  // damage it can deal in one turn: basic attack(s) plus its biggest spell
     int reach = 1;    // tiles from which that burst can land next turn (walks, spells, dashes)
+    bc::champion_type type{};
 };
 
 // Where enemy champions were seen together, so targets near them can be avoided for a while.

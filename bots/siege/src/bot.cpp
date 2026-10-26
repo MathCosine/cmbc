@@ -199,6 +199,14 @@ constexpr bool kWaitJobs = true;
 constexpr bool kTeamBank = true;
 constexpr bool kAltarGuard = false;
 constexpr bool kInterceptTribute = false;
+// v14, from the v13 scrim on 01elk-arena (0-1,008, 53 deaths to 1): in the first fight all six of
+// theirs hit ours while our Vesper Vale kept hitting the elk and Tavi waited for range. Join a
+// fight a teammate is in (an enemy within 7 tiles attacking one of us) instead of farming or
+// holding: 76/140 against v13, 115 against 105 of 140 against a Cassi & Issac team, 78 against 77
+// against fishsim, fewer deaths. Cassi and Issac (one pick, one life) count half a head each, so a
+// team with them no longer shows six heads to our five: 70/140 against v13, 107 against 105.
+constexpr bool kFairHeads = true;
+constexpr bool kJoinFights = true;
 // Altar patrol: with kAltarGuard on, the guard checks the altar for kPatrolStay rounds out of every
 // kPatrolPeriod instead of standing there. Off: with team banking 61/140 against team banking
 // alone; without it 67/140 against v12 and 76 against fishsim (v12 74), farming 2.4% slower.
@@ -436,6 +444,7 @@ void Bot::observe(bc::champion& me) {
     auto seen = [&](const bc::champion& c, bool enemy) {
         const auto t = c.champion_name();
         SeenChamp s{c, c.position(), c.health(), c.max_health(), 0, model_for(t).range, 0};
+        s.type = t;
         auto& cached = dps_cache_[static_cast<std::uint32_t>(static_cast<bc::handle_champion_t>(c)) & 31];
         const int refresh = kBurstModel && enemy ? 5 : 25;
         if (cached.round < 0 || round_ - cached.round > refresh) {
@@ -1120,11 +1129,16 @@ bool Bot::fight_enemies(bc::champion& me) {
     if (!nearest) return false;
     if (kInterceptTribute && intercept_tribute(me)) return true;
     if (nearest_d > (kBurstModel ? 10 : 7)) return kEarlyWarning && nearest_d <= 10 && early_warning(me);
-    int their_heads = 0, our_heads = 1;
+    // Cassi and Issac are one pick and one life in two bodies: with kFairHeads they count half each.
+    // Otherwise a team with them showed six heads to our five and our champions held back.
+    auto head = [](const SeenChamp& c) {
+        return kFairHeads && (c.type == bc::champion_type::cassi || c.type == bc::champion_type::issac) ? 0.5f : 1.f;
+    };
+    float their_heads = 0, our_heads = 1;
     for (const auto& e : enemies_)
-        if (!harmless_on_spawn(e) && cheb(e.pos, pos_) <= kCrowdRange) ++their_heads;
+        if (!harmless_on_spawn(e) && cheb(e.pos, pos_) <= kCrowdRange) their_heads += head(e);
     for (const auto& a : allies_seen_)
-        if (cheb(a.pos, pos_) <= kCrowdRange) ++our_heads;
+        if (cheb(a.pos, pos_) <= kCrowdRange) our_heads += head(a);
     const bool outnumbered = kStandAndFight && kAvoidOutnumbered && their_heads > our_heads;
 
     // Rounds for each side to wipe the other if everyone nearby commits.
@@ -1233,6 +1247,30 @@ bool Bot::fight_enemies(bc::champion& me) {
         // the threat is across a wall or a hole: get on with the game rather than stare
         // at it (one champion stood like this for 200+ rounds).
         return round_ - last_hurt_round_ <= 8;
+    }
+    if (kJoinFights && !retreating && !in_danger) {
+        // A teammate is in a fight: hit the enemy on it rather than keep farming or wait for an
+        // enemy to walk into range (on 01elk-arena our Vesper Vale hit the elk while three of us died).
+        const SeenChamp* help = nullptr;
+        int help_d = 1000;
+        for (const auto& e : enemies_) {
+            if (!huntable(e) || cheb(e.pos, pos_) > 7) continue;
+            bool on_ally = false;
+            for (const auto& a : allies_seen_)
+                if (cheb(a.pos, e.pos) <= std::max(2, e.range)) on_ally = true;
+            if (!on_ally) continue;
+            const bool focused = slots_ <= 5 && enemy_id(e) == comms_.focus();
+            const int d = focused ? -1 : cheb(e.pos, pos_);
+            if (d < help_d) {
+                help_d = d;
+                help = &e;
+            }
+        }
+        if (help && strike(*help)) {
+            mark("join-fight");
+            hold_turns_ = 0;
+            return true;
+        }
     }
     if (target && strike(*target)) {
         hold_turns_ = 0;
