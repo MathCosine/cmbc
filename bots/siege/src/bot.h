@@ -147,6 +147,7 @@ private:
     bool solo_camp_ok(Group& g, float dps);
     bool altar_guarded(vec2 altar) const;
     int altar_exposure(vec2 altar) const;
+    int altar_danger(vec2 altar) const;
     bool escort_banker(bc::champion& me);
     bool breach_active() const;
     std::vector<int> nearest_groups() const;

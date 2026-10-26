@@ -46,7 +46,11 @@ constexpr float kHealCost = 1.0f;
 constexpr int kCarryGems = 40;
 // Planning assumes this share of the paper damage: travel, retreats and stragglers
 // halve what a squad really deals (a golem group forecast at 19 rounds took 70).
-constexpr float kFightEfficiency = 0.6f;
+// Rough share of the team's damage that lands while fighting camps. 0.6 made big camps near our
+// spawn look like sieges early (v11: 0.8; with the loop and siege changes below, the ladder
+// scrim against intercontinental fish turned in 30% more gems than v9, 717 against 443 on
+// 01big-world where nobody fought).
+constexpr float kFightEfficiency = 0.8f;
 constexpr int kRewardTimeout = 8;  // rounds a reward out of sight is assumed to stay uncaptured
 constexpr std::uint64_t kPlanFuel = 45000;  // fuel needed before optional planning work
 constexpr std::uint64_t kSetupFuel = 60000;  // left after building the map to finish setup this turn
@@ -139,7 +143,7 @@ constexpr bool kHoldCapture = true;
 // Locally her share of our gems went from 23% to 48% and her gold by round 600 from 530 to
 // 1,319: 457 against 434 wins out of 560, 46/80 against v7 and v6, though farming with no
 // enemy around is 7% slower (more walking to rewards and the altar).
-constexpr bool kMarcellaBank = true;
+constexpr bool kMarcellaBank = false;
 constexpr int kBankerReach = 8;
 constexpr int kBankerClaim = 14;
 constexpr int kBankerCarry = 20;
@@ -166,6 +170,16 @@ constexpr int kAltarWait = 20;
 // 457 of 560, 49/80 against v7, 38/80 against the banker alone, farming 2% slower): the sparring
 // bots rarely hunt at the altar, so this is on for a ladder test.
 constexpr bool kBankEscort = true;
+// Loop and siege (v11). Squad targets may be waited for up to kRespawnWait rounds, and a camp
+// the team can clear while losing under kSiegeShare of its health is not a siege (0.55 kept the
+// 41-gem camp beside our spawn on 01big-world off limits until round 270; the other team took
+// it at round 35 and every 85 rounds after).
+constexpr int kRespawnWait = 100;
+constexpr float kSiegeShare = 0.85f;
+// Altar danger (v11). With a bag worth guarding, prefer an altar the enemy is not holding: on
+// 00corners five of us died with 48-85 gems at the middle altar their team banks at, while
+// the corner altars were free.
+constexpr bool kAltarDanger = true;
 constexpr int kEscortRange = 12;
 constexpr int kEscortStretch = 10;  // the banker is this close to the altar
 constexpr int kEscortBag = 30;      // and carries at least this many gems
@@ -691,6 +705,15 @@ std::vector<int> Bot::nearest_groups() const {
     for (std::size_t i = 0; i < order.size(); ++i) order[i] = static_cast<int>(i);
     std::sort(order.begin(), order.end(), [&](int a, int b) { return cheb(W.groups[a].anchor, pos_) < cheb(W.groups[b].anchor, pos_); });
     return order;
+}
+
+int Bot::altar_danger(vec2 altar) const {
+    // Extra tiles a big bag should walk to avoid an altar enemies were seen at (or we died at)
+    // lately, more in the middle and on the enemy side; free altars cost nothing extra.
+    bool held = round_ - death_round_ <= 150 && cheb(death_pos_, altar) <= 8;
+    for (const auto& s : sightings_)
+        if (round_ - s.round <= 60 && cheb(s.pos, altar) <= 8) held = true;
+    return held ? 30 + 8 * altar_exposure(altar) : 0;
 }
 
 bool Bot::capturing_here() const {
@@ -1844,6 +1867,7 @@ int Bot::best_altar(int& distance) {
         if (i == altar_choice_ && d != kUnreached) d -= 3;
         // An enemy lock costs five attacks to clear: prefer another altar unless far.
         if (i < 32 && round_ - enemy_lock_round_[i] < 150 && d != kUnreached) d += 12;
+        if (kAltarDanger && gems_ >= kEscortBag && d != kUnreached) d += altar_danger(W.altars[i]);
         if (d < distance) {
             distance = d;
             best = i;
@@ -2200,7 +2224,7 @@ float Bot::heal_rounds(const Group& g, float dps, float hp) {
 float Bot::siege_rounds(const Group& g, float team_dps, float team_hp, bool unlocks) {
     // Extra rounds spent going home and back between trips; negative when out of reach.
     const float damage = forecast(g, team_dps).damage;
-    if (damage <= team_hp * (unlocks ? 0.8f : 0.55f)) return 0;
+    if (damage <= team_hp * (unlocks ? 0.8f : kSiegeShare)) return 0;
     // A young team besieging a monolith in contested ground loses the early game.
     if (!unlocks && round_ < kSiegeFrom) return -1;
     const float trips = damage / std::max(team_hp * kTripShare, 1.f);
@@ -2220,8 +2244,10 @@ bool Bot::any_altar_open() const {
 int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool allow_contested) {
     // Nothing can be banked until the way to an altar is open.
     if (breach_active()) return world().breach_group;
-    // In the opening, our own camps are worth waiting a while for rather than walking off.
-    const int respawn_wait = kSafeOpening && round_ < kOpeningRounds && !allow_contested ? 60 : 15;
+    // Wait for the camps beside us to respawn rather than walking across the map: on 01big-world
+    // the squad walked 60-75 tiles to a far camp whenever the two by our spawn were respawning,
+    // and cleared those half as often as the other team (6 against 12 times each).
+    const int respawn_wait = kRespawnWait;
     auto& W = world();
     team_dps *= kFightEfficiency;
     const bool altar_reachable = any_altar_open();
