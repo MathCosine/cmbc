@@ -110,6 +110,12 @@ void World::init() {
     spawn_poi = add_poi({}, &bc::map::spawn_region(team::ally), true);
     enemy_spawn_poi = add_poi({}, &enemy_region, false);
     for (auto altar : altars) altar_poi.push_back(add_poi({altar}, nullptr, false));
+    if (kRoutePlan) {
+        std::vector<vec2> anchors;
+        anchors.reserve(groups.size());
+        for (const auto& g : groups) anchors.push_back(g.anchor);
+        plan.load(w, h, anchors);
+    }
     ready = true;
 }
 

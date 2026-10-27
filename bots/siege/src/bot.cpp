@@ -206,6 +206,31 @@ constexpr bool kStunOverlap = true;
 // cannot see); kCombatDash 70/122/96/118 (fires 1-13 times a game); kFightBuild 67/119/103/117. Off.
 constexpr bool kFightBuild = false;  // Durability first in every build (see build_for)
 constexpr bool kStunChain = false;
+// Route plan look ahead (kRoutePlan in plan.h): the best kLookTop camps are compared on the best
+// next camp among their kLookNear nearest; a camp with nothing worth doing next counts kLookDeadEnd.
+// kRouteAhead: a champion far behind its squad (more than kAheadWalk tiles and kAheadMargin more
+// than the squad needs to finish its camp, two teammates there) walks to the camp the plan says
+// comes next and waits outside its reach, instead of arriving at a finished camp.
+constexpr bool kRouteAhead = false;
+// kCaptureTimeout: a capture that has not landed after this many rounds is given up and its camp
+// avoided for 150 rounds. On 01yellow-brick-road a champion "captured" a 600-gold strip beside the
+// enemy spawn for 360+ rounds: enemies standing in its region kept it from ever completing.
+constexpr int kCaptureTimeout = 40;  // 0 = off
+constexpr int kAheadWalk = 10;
+constexpr int kAheadMargin = 4;
+// kLookCalm: look ahead only when the coast is clear (no enemy seen, no teammate lost, in the
+// last kCalmRounds). Unconditional, it farmed 1.1% faster with no opponent (1,076 against 1,088
+// rounds to 1,000 gems) but lost 57/140 against the same bot without it, 119 against 126 against
+// a Cassi & Issac team, 96 against 106 against fishsim.
+constexpr bool kLookCalm = false;
+// With kLookCalm alone: 61/140 against the same bot without it, 118/99/122 against Cassi & Issac /
+// fishsim / hunter (126/106/119), farming 1,080 against 1,088. kLookOwnSide: only camps on our
+// side (not contested, not theirs) count as the next camp, so it chains our camps instead of
+// drawing the squad toward the middle.
+constexpr bool kLookOwnSide = false;
+constexpr int kLookTop = 5;
+constexpr int kLookNear = 6;
+constexpr float kLookDeadEnd = 0.85f;
 constexpr bool kCombatDash = false;
 constexpr float kDashKill = 2.f;  // finish when its health is under this many of our hits
 // Fields on 8 of 70 maps. Out of 140 against the v24 test build / Cassi & Issac / fishsim / hunter:
@@ -310,7 +335,7 @@ constexpr bool kJoinFights = true;
 // health left (Cassi counts double, Heart of Ruin less until nearly dead). And a ranged champion
 // whose target stepped out of range shot nothing while it walked after it (our Vesper Vale dealt
 // 180 in that fight): with another enemy in range, shoot that one instead.
-constexpr bool kSmartFocus = false;
+constexpr bool kSmartFocus = true;
 constexpr bool kNoChase = false;
 // Peel back: their hurt champions fell back behind a teammate and kept fighting (their Heart of
 // Ruin took 1,086 in that fight, their Marcella 100, Issac 0), while ours ran for home alone. A
@@ -527,7 +552,8 @@ const std::vector<BuildStep>& build_for(bc::champion_type t) {
                                                   {it::monster_shard_of_strength, 5},
                                                   {it::jungle_shard_of_health, 5},
                                                   {it::bruiser_shard_of_strength, 1 << 30}};
-    if (t == bc::champion_type::marcella || t == bc::champion_type::heart_of_ruin) return caster;
+    // Focus builds: Marcella's spell, Heart of Ruin's dash and shield, Willow's heal.
+    if (t == bc::champion_type::marcella || t == bc::champion_type::heart_of_ruin || t == bc::champion_type::willow) return caster;
     if (tank_type(t)) return kFightBuild ? tank_f : tank;
     return bc::champion{t}.base_stats().base_attack_range > 1 ? (kFightBuild ? earner_f : earner) : (kFightBuild ? fighter_f : fighter);
 }
@@ -2987,10 +3013,11 @@ bool Bot::capture(bc::champion& me) {
         // Drop the claim once the reward is gone, or when something pulled us far away or
         // the tiles cannot be reached: champions used to stand still "capturing" a reward
         // across the map for hundreds of rounds.
-        if (g.state != GroupState::reward || cheb(g.anchor, pos_) > 14 || capture_fail_ >= 6) {
+        const bool timed_out = kCaptureTimeout > 0 && capture_since_ >= 0 && round_ - capture_since_ > kCaptureTimeout;
+        if (g.state != GroupState::reward || cheb(g.anchor, pos_) > 14 || capture_fail_ >= 6 || timed_out) {
             // Tiles we could not walk to (an island only a dash reaches, say): stop
             // re-claiming them every few turns.
-            if (capture_fail_ >= 6) avoid_until_[target_ & 63] = round_ + 150;
+            if (capture_fail_ >= 6 || timed_out) avoid_until_[target_ & 63] = round_ + 150;
             task_ = Task::farm;
             target_ = -1;
             capture_fail_ = 0;
@@ -3030,6 +3057,7 @@ bool Bot::capture(bc::champion& me) {
         target_ = best;
         wait_rounds_ = 0;
         capture_fail_ = 0;
+        capture_since_ = round_;
     }
     set_status(Task::capture, target_);
     const auto& g = W.groups[target_];
@@ -3211,6 +3239,17 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
     const auto order = nearest_groups();
     int best = -1;
     float best_score = 0;
+    struct Look {
+        float score, value, rounds;
+        int id;
+    };
+    std::array<Look, kLookTop> look{};
+    int look_n = 0;
+    // Per group, worked out once in the pass below and reused by the look ahead: fight, capture and
+    // heal rounds (no walking), and whether it is a quick camp the squad would take.
+    std::array<float, 64> base_rounds{};
+    std::array<float, 64> worth{};        // value times the score adjustments below
+    std::array<signed char, 64> quick{};  // 0 not worked out yet, 1 quick, -1 not
     for (const int gi : order) {
         auto& g = W.groups[gi];
         if (bc::fuel_remaining() < kSquadPlanFloor) break;
@@ -3236,22 +3275,83 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
         const float extra = siege_rounds(g, team_dps, team_hp, unlocks);
         if (extra < 0 || (choosing_small_ && extra > 0)) continue;
         if (!g.alive_by(round_ + d + respawn_wait)) continue;
-        float score = (g.value(kGoldWeight) + (unlocks ? 1000.f : 0.f)) /
-                      (group_rounds(g, team_dps, d) + extra + heal_rounds(g, team_dps, team_hp));
-        // Contested ground near the enemy spawn is riskier.
-        if (enemy_side(g)) score *= enemy_side_factor(false);
-        if (contested_now) score *= g.harmless ? kOpeningClusters : kOpeningContested;
-        if (kHoldMiddle && held_altar_near(g.anchor)) score *= kHoldBonus;
-        if (kAltarZoneBias > 0) score *= altar_zone(g);
-        if (kFieldCamp && in_field(g.anchor)) score *= kFieldBonus;
-        if (kMiddleBias > 0) {
-            const vec2 mid{W.w / 2, W.h / 2};
-            score *= 1.f + kMiddleBias * (1.f - static_cast<float>(cheb(g.anchor, mid)) / std::max(1, std::max(W.w, W.h) / 2));
+        const float fixed = forecast(g, team_dps).rounds + kCaptureRounds + heal_rounds(g, team_dps, team_hp);
+        if (kRoutePlan && W.plan.ok && g.id < 64) {
+            base_rounds[g.id] = fixed;
+            quick[g.id] = extra == 0 && !unlocks ? 1 : -1;
         }
-        score *= target_danger(g);
+        const float value = g.value(kGoldWeight) + (unlocks ? 1000.f : 0.f);
+        const int wait_g = g.state == GroupState::respawning ? std::max(0, g.respawn_round - (round_ + d)) : 0;
+        const float rounds = d + wait_g + fixed + extra;
+        const float mods = squad_mods(g, contested_now);
+        const float score = value / rounds * mods;
+        if (kRoutePlan && W.plan.ok && g.id < 64) worth[g.id] = g.value(kGoldWeight) * mods;
+        if (kRoutePlan && W.plan.ok) {
+            // Keep the best few for the look ahead below.
+            int at = std::min<int>(look_n, kLookTop - 1);
+            if (look_n < kLookTop || score > look[at].score) {
+                if (look_n < kLookTop) ++look_n;
+                at = look_n - 1;
+                while (at > 0 && look[at - 1].score < score) {
+                    look[at] = look[at - 1];
+                    --at;
+                }
+                look[at] = {score, value * mods, rounds, g.id};
+            }
+        }
         if (score > best_score) {
             best_score = score;
             best = g.id;
+        }
+    }
+    if (kRoutePlan && W.plan.ok && look_n >= 2 && bc::fuel_remaining() > kSquadPlanFloor && (!kLookCalm || calm())) {
+        // One camp ahead: with the walking distances measured in the draft, a camp that leads on to
+        // a good next one beats a dead end of the same worth.
+        float best_look = 0;
+        for (int i = 0; i < look_n; ++i) {
+            const auto& c = look[i];
+            float combined = 0;
+            const auto& next = W.plan.nearest(c.id, kLookNear);
+            for (int h : next) {
+                if (h >= 64 || h == c.id) continue;
+                auto& gh = W.groups[h];
+                if (gh.state == GroupState::reward) continue;
+                if (quick[h] == 0) {
+                    // Not scored above (respawning, or past the fuel cut-off): one forecast, here only.
+                    quick[h] = -1;
+                    const bool blocked_now = opening_blocks(gh, allow_contested);
+                    if (!gh.unreachable && gh.id <= kMaxTarget && gh.id != exclude && gh.id != other_party_target_ &&
+                        (!gh.harmless || kSquadClusters) && round_ >= avoid_until_[gh.id & 63] &&
+                        !(blocked_now && !(kSoftOpening && gh.contested))) {
+                        const auto fc = forecast(gh, team_dps);
+                        if (gh.harmless || fc.damage <= team_hp * kSiegeShare) {
+                            float heal = 0;
+                            if (!gh.harmless) {
+                                const int home = home_dist(gh);
+                                if (home != kUnreached) heal = kHealCost * fc.damage / std::max(team_hp, 1.f) * (2.f * home + 10.f);
+                            }
+                            base_rounds[h] = fc.rounds + kCaptureRounds + heal;
+                            worth[h] = gh.value(kGoldWeight) * squad_mods(gh, blocked_now);
+                            quick[h] = 1;
+                        }
+                    }
+                }
+                if (quick[h] != 1) continue;
+                if (kLookOwnSide && (enemy_side(gh) || gh.contested)) continue;
+                const int walk = W.plan.between(c.id, h);
+                if (walk == kUnreached) continue;
+                const int arrive = static_cast<int>(c.rounds) + walk;
+                if (!gh.alive_by(round_ + arrive + respawn_wait)) continue;
+                const float wait = gh.state == GroupState::respawning ? std::max(0, gh.respawn_round - (round_ + arrive)) : 0.f;
+                combined = std::max(combined, (c.value + worth[h]) / (c.rounds + walk + wait + base_rounds[h]));
+            }
+            // c.value already carries its adjustments, so c.score is c.value / c.rounds.
+            const float rate = c.value / std::max(c.rounds, 1.f);
+            const float factor = next.empty() ? 1.f : combined <= 0 ? kLookDeadEnd : std::clamp(combined / rate, 0.6f, 1.6f);
+            if (c.score * factor > best_look) {
+                best_look = c.score * factor;
+                best = c.id;
+            }
         }
     }
     if (best >= 0) return best;
@@ -3555,9 +3655,82 @@ bool Bot::farm(bc::champion& me) {
         avoid_until_[target_ & 63] = round_ + 100;
         plan_round_ = -1000;
     }
+    if (kRouteAhead && kRoutePlan && W.plan.ok && task_ == Task::farm && g.state == GroupState::alive) {
+        const int walk = dist_to_group(g);
+        float dps_there = 0;
+        int there = 0;
+        for (const auto& a : allies_seen_)
+            if (cheb(a.pos, g.anchor) <= 4) {
+                ++there;
+                dps_there += a.dps;
+            }
+        if (there >= 2 && walk != kUnreached && walk > kAheadWalk &&
+            walk > forecast(g, dps_there * kFightEfficiency).rounds + kCaptureRounds + kAheadMargin) {
+            const int next = next_stop(g);
+            if (next >= 0) {
+                const auto& n = W.groups[next];
+                if (cheb(pos_, n.anchor) <= n.max_range + n.extent + 2) {
+                    mark("farm-ahead-wait");
+                } else {
+                    mark("farm-ahead");
+                    travel(me, n.poi);
+                }
+                return true;
+            }
+        }
+    }
     mark("farm-travel");
     travel(me, g.poi);
     return true;
+}
+
+float Bot::squad_mods(Group& g, bool contested_now) {
+    // Everything the squad's camp score multiplies by besides worth per round.
+    auto& W = world();
+    float m = 1.f;
+    // Contested ground near the enemy spawn is riskier.
+    if (enemy_side(g)) m *= enemy_side_factor(false);
+    if (contested_now) m *= g.harmless ? kOpeningClusters : kOpeningContested;
+    if (kHoldMiddle && held_altar_near(g.anchor)) m *= kHoldBonus;
+    if (kAltarZoneBias > 0) m *= altar_zone(g);
+    if (kFieldCamp && in_field(g.anchor)) m *= kFieldBonus;
+    if (kMiddleBias > 0) {
+        const vec2 mid{W.w / 2, W.h / 2};
+        m *= 1.f + kMiddleBias * (1.f - static_cast<float>(cheb(g.anchor, mid)) / std::max(1, std::max(W.w, W.h) / 2));
+    }
+    return m * target_danger(g);
+}
+
+int Bot::next_stop(const Group& g) {
+    // The camp the squad most likely takes after g: the best quick camp near it on the plan,
+    // worked out the same way by every champion (and kept for 10 rounds).
+    if (ahead_for_ == g.id && round_ - ahead_round_ < 10) return ahead_target_;
+    auto& W = world();
+    float team_dps = 0, team_hp = 0;
+    int active = 0;
+    team_power(team_dps, team_hp, active, false, -1);
+    team_dps *= kFightEfficiency;
+    int best = -1;
+    float best_rate = 0;
+    const int finish = static_cast<int>(forecast(g, team_dps).rounds) + kCaptureRounds;
+    for (int h : W.plan.nearest(g.id, kLookNear)) {
+        auto& gh = W.groups[h];
+        if (gh.unreachable || gh.id > kMaxTarget || (gh.harmless && !kSquadClusters) || gh.state == GroupState::reward) continue;
+        const int walk = W.plan.between(g.id, h);
+        if (walk == kUnreached || !gh.alive_by(round_ + finish + walk + 15)) continue;
+        if (opening_blocks(gh, false) && !(kSoftOpening && gh.contested)) continue;
+        if (siege_rounds(gh, team_dps, team_hp, false) != 0) continue;
+        const float wait = gh.state == GroupState::respawning ? std::max(0, gh.respawn_round - (round_ + finish + walk)) : 0.f;
+        const float rate = gh.value(kGoldWeight) / (walk + wait + forecast(gh, team_dps).rounds + kCaptureRounds);
+        if (rate > best_rate) {
+            best_rate = rate;
+            best = h;
+        }
+    }
+    ahead_for_ = g.id;
+    ahead_round_ = round_;
+    ahead_target_ = best;
+    return best;
 }
 
 // ---------------------------------------------------------------------------

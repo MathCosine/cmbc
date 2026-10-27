@@ -2,6 +2,7 @@
 // Static map knowledge plus what this champion has observed about camps.
 // Each champion runs its own copy; teammates share only the 8-byte memory.
 #include "util.h"
+#include "plan.h"
 #include <memory>
 #include <optional>
 
@@ -118,6 +119,7 @@ public:
     bool has_field(int poi) const { return pois[poi].field != nullptr; }
     // Spend spare fuel precomputing fields, nearest groups first.
     void precompute(std::uint64_t fuel_floor);
+    RoutePlan plan;  // walking distances measured during the draft (kRoutePlan)
 
     int group_id_at(vec2 p) const { return camp_grid.get(p) ? group_at[p.y * w + p.x] : -1; }
     CampInfo* camp_info_at(vec2 p) {

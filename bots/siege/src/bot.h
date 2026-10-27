@@ -149,6 +149,9 @@ private:
     bool unsafe_alone(Group& g);
     bool stun_wasted(const SeenChamp& e) const;
     bool stun_turn() const;
+    int ahead_target_ = -1, ahead_for_ = -1, ahead_round_ = -1000;  // kRouteAhead: where the squad goes next
+    int next_stop(const Group& g);
+    float squad_mods(Group& g, bool contested_now);
     std::vector<vec2> dash_landings();
     bool dash_toward(bc::champion& me, vec2 target, int within);
     bool dash_away(bc::champion& me, const std::vector<std::pair<vec2, int>>& threats);
@@ -266,6 +269,7 @@ private:
     vec2 last_pos_{-1, -1};
     int last_hurt_round_ = -1000;  // last round we lost health
     int capture_fail_ = 0;         // turns in a row we could not step toward our capture
+    int capture_since_ = -1;       // round this capture claim started
     int yield_slot_ = -1;          // ally we are making way for in a corridor
     int yield_until_ = -1;
     std::array<int, 32> altar_avoid_until_{};  // altars we could not walk to lately

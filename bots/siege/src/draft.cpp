@@ -11,6 +11,7 @@
 // Cassi & Issac look strong on paper (two bodies for one pick) but share one
 // life: enemies kill 600-health Cassi and take both, so they come last.
 #include "draft.h"
+#include "plan.h"
 #include <cambc.h>
 #include <algorithm>
 #include <array>
@@ -32,6 +33,12 @@ constexpr bool kHeartDraft = false;
 // off. Varg in place of Tavi instead: his basic attacks splash, and most camps come in packs.
 // Out of 140 (as above): 63/112/83, farming 1% faster: off.
 constexpr bool kVargDraft = false;
+// Willow (heal: 3x Focus, range 4, every 8 rounds) in place of Tavi (1) or Vendetta (2) with five.
+// Vesper Vale in place of Willow won 50-30 over 80 games long ago; retested with the v26 bot.
+constexpr int kWillowDraft = 2;
+// Willow in the 3-4 champion draft too (Vesper Vale, Marcella, Willow, Ryth): in place of Ryth with
+// three, of Tavi with four.
+constexpr bool kWillowSmall = false;
 
 void play_draft() {
     static bool wrote_memory = false;
@@ -39,6 +46,8 @@ void play_draft() {
         cambc::draft_memory = std::string_view("siege2");
         wrote_memory = true;
     }
+    // The draft has fuel to spare (about 975,000 on its first pick): measure the map for the route plan.
+    plan_in_draft();
     const auto chosen = cambc::draft::current_draft(cambc::team::ally);
     if (chosen.size() >= cambc::draft::team_size()) return;
     // Maps set 3, 4 or 5 champions a side. With 3 or 4 we won 20-25% of ladder games against 39%
@@ -47,10 +56,18 @@ void play_draft() {
     // 173/196 against 147/196 locally.
     constexpr std::array kSmall{champion_draft::vesper_vale, champion_draft::marcella, champion_draft::ryth, champion_draft::tavi, champion_draft::vendetta, champion_draft::willow, champion_draft::varg, champion_draft::heart_of_ruin};
     const bool small_team = cambc::draft::team_size() <= 4;
+    constexpr std::array kSmallW{champion_draft::vesper_vale, champion_draft::marcella, champion_draft::willow, champion_draft::ryth, champion_draft::tavi, champion_draft::vendetta, champion_draft::varg, champion_draft::heart_of_ruin};
     constexpr std::array kHeart{champion_draft::vendetta, champion_draft::vesper_vale, champion_draft::ryth, champion_draft::heart_of_ruin, champion_draft::marcella, champion_draft::tavi, champion_draft::willow, champion_draft::varg};
     constexpr std::array kVarg{champion_draft::vendetta, champion_draft::vesper_vale, champion_draft::ryth, champion_draft::varg, champion_draft::marcella, champion_draft::tavi, champion_draft::willow, champion_draft::heart_of_ruin};
-    const auto big = kHeartDraft ? std::span<const champion_draft>(kHeart) : kVargDraft ? std::span<const champion_draft>(kVarg) : std::span<const champion_draft>(kPriority);
-    for (auto pick : small_team ? std::span<const champion_draft>(kSmall) : big) {
+    constexpr std::array kWillowT{champion_draft::vendetta, champion_draft::vesper_vale, champion_draft::ryth, champion_draft::willow, champion_draft::marcella, champion_draft::tavi, champion_draft::varg, champion_draft::heart_of_ruin};
+    constexpr std::array kWillowV{champion_draft::willow, champion_draft::vesper_vale, champion_draft::ryth, champion_draft::tavi, champion_draft::marcella, champion_draft::vendetta, champion_draft::varg, champion_draft::heart_of_ruin};
+    const auto big = kHeartDraft ? std::span<const champion_draft>(kHeart)
+                     : kVargDraft ? std::span<const champion_draft>(kVarg)
+                     : kWillowDraft == 1 ? std::span<const champion_draft>(kWillowT)
+                     : kWillowDraft == 2 ? std::span<const champion_draft>(kWillowV)
+                     : std::span<const champion_draft>(kPriority);
+    const auto small = kWillowSmall ? std::span<const champion_draft>(kSmallW) : std::span<const champion_draft>(kSmall);
+    for (auto pick : small_team ? small : big) {
         if (std::find(chosen.begin(), chosen.end(), pick) != chosen.end()) continue;
         cambc::draft::pick(pick);
         return;
