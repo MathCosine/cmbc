@@ -107,14 +107,33 @@ void World::init() {
     std::sort(group_order.begin(), group_order.end(), [&](int a, int b) {
         return cheb(groups[a].anchor, ally_centre) < cheb(groups[b].anchor, ally_centre);
     });
+    jackpot = -1;
+    if (kJackpot) {
+        int total = 0, best = -1;
+        for (const auto& g : groups) {
+            total += g.gems;
+            if (best < 0 || g.gems > groups[best].gems) best = g.id;
+        }
+        if (best >= 0 && groups[best].gems >= kJackpotGems && groups[best].gems >= kJackpotShare * total) jackpot = best;
+    }
     spawn_poi = add_poi({}, &bc::map::spawn_region(team::ally), true);
     enemy_spawn_poi = add_poi({}, &enemy_region, false);
     for (auto altar : altars) altar_poi.push_back(add_poi({altar}, nullptr, false));
-    if (kRoutePlan) {
+    if (kDraftPlan) {
         std::vector<vec2> anchors;
         anchors.reserve(groups.size());
         for (const auto& g : groups) anchors.push_back(g.anchor);
         plan.load(w, h, anchors);
+        // Spawn walks from the draft: each group's home walk and side are known from round 1.
+        if (kDraftHome && plan.ok)
+            for (auto& g : groups) {
+                const int mine = plan.home[g.id], theirs = plan.enemy[g.id];
+                if (mine == kUnreached) continue;
+                g.home = mine;
+                if (theirs == kUnreached) continue;
+                g.side = theirs < mine ? 1 : 0;
+                g.contested = std::abs(theirs - mine) <= std::max(6, (mine + theirs) / 10);
+            }
     }
     ready = true;
 }
