@@ -230,6 +230,32 @@ constexpr int kCaptureTimeout = 40;  // 0 = off
 // always come from a camp just killed); mode 2 is even locally, where no bot ambushes from bushes.
 constexpr int kRecallSafe = 2;
 constexpr int kRecallCalm = 2;
+// Fight inputs (v31 tests).
+// kEngageFloor: below this share of our health we no longer walk into a fight (engage an enemy up
+// to 5 tiles out, join a teammate's fight); we still hit whatever is already in reach. Health only
+// counted against incoming damage, so a champion at 30% with nobody on it yet walked in. 0 = off.
+constexpr float kEngageFloor = 0.4f;
+// Grass hides whoever stands in it from everyone outside the patch (GameRules: bushes block sight).
+// kUnseenWard: hit by an enemy champion when no enemy in sight could have reached us, drop our ward
+// on the spot within 2 tiles that sees the most hidden grass, so the attacker shows.
+// kHurtFlee: hurt enough to go home and hit by champions in the last kFleeMemory turns: no recall;
+// step away from the hidden grass and the enemies seen around us, toward home, then recall.
+constexpr bool kUnseenWard = true;
+constexpr bool kHurtFlee = true;
+constexpr int kFleeMemory = 4;
+// kBushHold: a ranged champion waiting for an enemy to walk into its range (the "hold") steps into
+// an adjacent grass tile when that leaves it no more exposed: unseen, it cannot be targeted.
+constexpr bool kBushHold = true;
+// kReadyFights: enemy cooldowns are readable in sight. Fight math counts every champion in sight
+// (enemies, teammates, us) by what it can deal over the next kReadyHorizon turns from its live
+// cooldowns (a ready spell once, one on cooldown not at all) instead of spells averaged over 8.
+constexpr bool kReadyFights = false;
+constexpr int kReadyHorizon = 3;
+// Out of 140 on top of v30 (v30 build 70/124/105/123; this code with all four off 68/124/108/123):
+// floor 0.4 62/128/105/124 (deaths against fish 6.0/8.7, was 6.9/9.7); ward + flee 67/127/103/119;
+// bush hold 67/122/113/124; ready fights 71/122/98/120 (off). Floor, ward, flee and bush hold
+// together: 79 against the all-off build, 72/125/104/127 against v30 and the sparring bots, deaths
+// 6.5/8.6/10.9 a game against 6.8/9.8/12.6, farming 1,132 against 1,144 rounds. On (v31 test).
 constexpr int kAheadWalk = 10;
 constexpr int kAheadMargin = 4;
 // kLookCalm: look ahead only when the coast is clear (no enemy seen, no teammate lost, in the
@@ -790,6 +816,8 @@ void Bot::observe(bc::champion& me) {
         s.dps = cached.dps;
         s.burst = cached.burst;
         s.reach = threat_for(t).reach;
+        s.now = s.dps;
+        if (kReadyFights && cheb(s.pos, pos_) <= 10) s.now = dps_now(c, t, c.strength(), c.focus());
         return s;
     };
     enemies_.clear();
@@ -1580,7 +1608,17 @@ void Bot::play_turn() {
     if ((kLearnEnemy || kDeathScale) && round_ % 250 == 0)
         LOG("SCALE r" << round_ << " " << bc::to_string(type_) << " seen " << dmg_seen_ << " expected " << dmg_expected_ << " scale " << enemy_scale());
     if (damage_taken_ > 0) last_hurt_round_ = round_;
-    if (kRecallSafe == 2 && damage_taken_ > incoming_camp_damage(pos_) + 1.f) last_champ_hurt_round_ = round_;
+    if (kRecallSafe == 2 || kUnseenWard || kHurtFlee) {
+        const float from_champs = damage_taken_ - incoming_camp_damage(pos_);
+        unseen_hit_ = false;
+        if (from_champs > 1.f) {
+            last_champ_hurt_round_ = round_;
+            // None of the enemies in sight could have reached us: someone is hidden.
+            unseen_hit_ = true;
+            for (const auto& e : enemies_)
+                if (cheb(e.pos, pos_) <= std::max(e.reach, 4) + 1) unseen_hit_ = false;
+        }
+    }
     last_hp_ = hp_;
     last_hp_round_ = round_;
 
@@ -1647,6 +1685,7 @@ void Bot::act(bc::champion& me) {
     if (at_spawn || type_ == bc::champion_type::tavi) shop(me, at_spawn || (kLockDenial && type_ == bc::champion_type::tavi));
     mark("locks");
     place_lock(me);
+    if (kUnseenWard && unseen_hit_) reveal_ward(me);
     scout_ward(me);
 
     mark("enemies");
@@ -1856,13 +1895,13 @@ bool Bot::fight_enemies(bc::champion& me) {
         hold_turns_ = 0;
         return false;
     }
-    const float my_dps = dps_of(type_, strength_, focus_);
+    const float my_dps = kReadyFights ? dps_now(me, type_, strength_, focus_) : dps_of(type_, strength_, focus_);
     float ally_dps = my_dps, ally_hp = hp_;
     // Count allies as far out as enemies: a shorter ally range made even fights look lost.
     const int ally_range = kStandAndFight ? 8 : 6;
     for (const auto& a : allies_seen_)
         if (cheb(a.pos, pos_) <= ally_range) {
-            ally_dps += a.dps;
+            ally_dps += kReadyFights ? a.now : a.dps;
             ally_hp += a.hp;
         }
     float enemy_dps = 0, enemy_hp = 0, threat = 0, burst = 0, expect = 0;
@@ -1874,11 +1913,11 @@ bool Bot::fight_enemies(bc::champion& me) {
         if (harmless_on_spawn(e)) continue;
         const int d = cheb(e.pos, pos_);
         if (d <= sense) {
-            enemy_dps += e.dps;
+            enemy_dps += kReadyFights ? e.now : e.dps;
             enemy_hp += e.hp;
         }
         if (d <= e.range + 1) {
-            threat += e.dps;
+            threat += kReadyFights ? e.now : e.dps;
             // Our share when it can also hit teammates beside us.
             if (kLearnEnemy) {
                 int others = 0;
@@ -2080,7 +2119,8 @@ bool Bot::fight_enemies(bc::champion& me) {
             if (!harmless_on_spawn(e) && cheb(e.pos, pos_) <= e.range + 1) farming = false;
     }
     if (farming && !(target && cheb(target->pos, pos_) <= range_)) return false;
-    if (kJoinFights && !retreating && !in_danger && !bag && !(kRefineFight && target)) {
+    const bool fit = kEngageFloor <= 0 || hp_ >= max_hp_ * kEngageFloor;
+    if (kJoinFights && fit && !retreating && !in_danger && !bag && !(kRefineFight && target)) {
         // A teammate is in a fight: hit the enemy on it rather than keep farming or wait for an
         // enemy to walk into range (on 01elk-arena our Vesper Vale hit the elk while three of us died).
         const SeenChamp* help = nullptr;
@@ -2110,7 +2150,7 @@ bool Bot::fight_enemies(bc::champion& me) {
         hold_turns_ = 0;
         return true;
     }
-    if (kStandAndFight && !losing && !outnumbered) {
+    if (kStandAndFight && fit && !losing && !outnumbered) {
         // Engage rather than keep farming while an enemy walks up and picks the moment.
         const SeenChamp* goal = nullptr;
         for (const auto& e : enemies_) {
@@ -2135,6 +2175,22 @@ bool Bot::fight_enemies(bc::champion& me) {
             if (ranged_ && !busy && !low && hold_turns_ < kMaxHold && !under_fire && !chase_bag) {
                 ++hold_turns_;
                 mark("hold");
+                if (kBushHold && !world().bushes.get(pos_) && can_move_ && !moved_) {
+                    // Wait in the grass beside us if that is no closer to anyone's reach.
+                    auto exposure = [&](vec2 p) {
+                        int worst = 1000;
+                        for (const auto& e : enemies_)
+                            if (!harmless_on_spawn(e)) worst = std::min(worst, cheb(p, e.pos) - e.reach);
+                        return worst;
+                    };
+                    load_occupancy();
+                    const int here = exposure(pos_);
+                    for (auto d : kDirs) {
+                        const vec2 n = pos_ + d;
+                        if (!free_tile(n) || !world().bushes.get(n) || exposure(n) < here) continue;
+                        if (try_move(me, d)) break;
+                    }
+                }
                 return true;
             }
             hold_turns_ = 0;
@@ -2795,6 +2851,77 @@ void Bot::drop_ward(bc::champion& me) {
     }
 }
 
+void Bot::reveal_ward(bc::champion& me) {
+    // Drop the ward where it sees the most grass we cannot see into now.
+    if (round_ < ward_ready_round_) return;
+    auto& W = world();
+    load_occupancy();
+    // Hidden grass around us (what an attacker could stand in), then the ward tile seeing most of it.
+    std::vector<vec2> hidden;
+    for (int dy = -5; dy <= 5; ++dy)
+        for (int dx = -5; dx <= 5; ++dx) {
+            const vec2 p{pos_.x + dx, pos_.y + dy};
+            if (W.in_bounds(p) && W.bushes.get(p) && !visible_.get(p)) hidden.push_back(p);
+        }
+    if (hidden.empty()) {
+        ward_ready_round_ = round_ + 1;  // nothing to look at here
+        return;
+    }
+    vec2 best{-1, -1};
+    int best_score = 0;
+    for (int dy = -2; dy <= 2; ++dy)
+        for (int dx = -2; dx <= 2; ++dx) {
+            const vec2 n{pos_.x + dx, pos_.y + dy};
+            if (!free_tile(n)) continue;
+            int score = 0;
+            for (auto p : hidden)
+                if (cheb(p, n) <= 3) ++score;
+            if (score > best_score) {
+                best_score = score;
+                best = n;
+            }
+        }
+    if (best.x < 0) return;
+    bool placed = false;
+    try {
+        placed = me.place_ward(best);
+    } catch (const std::exception&) {
+    }
+    if (placed) {
+        ward_ready_round_ = round_ + bc::constants::ward_cooldown + 1;
+        ward_pos_ = best;
+        mark("reveal-ward");
+    } else {
+        ward_ready_round_ = round_ + 3;
+    }
+}
+
+float Bot::dps_now(const bc::champion& c, bc::champion_type t, float strength, float focus) const {
+    // Damage per round over the next kReadyHorizon turns: basic attacks every turn, plus each spell
+    // that is ready within the horizon once.
+    static std::array<int, 13> splash{};
+    auto& sp = splash[static_cast<int>(t)];
+    if (sp == 0) sp = bc::champion{t}.passive() == bc::passive_type::splash_attack ? 2 : 1;
+    float d = strength * (sp == 2 ? 1.5f : 1.f);
+    const float h = static_cast<float>(kReadyHorizon);
+    try {
+        for (const auto& ab : c.abilities()) {
+            const auto& info = ab.info();
+            if (!info) continue;
+            if (ab.cooldown() >= kReadyHorizon) continue;
+            std::visit([&](const auto& p) {
+                using T = std::decay_t<decltype(p)>;
+                if constexpr (std::is_same_v<T, bc::ability_attack_reset>) d += strength / h;
+                else if constexpr (std::is_same_v<T, bc::ability_damage> || std::is_same_v<T, bc::ability_cc>) d += focus * p.modifier / h;
+                else if constexpr (std::is_same_v<T, bc::ability_aoe_damage> || std::is_same_v<T, bc::ability_dash>) d += focus * p.modifier * 1.5f / h;
+            }, *info);
+        }
+    } catch (const std::exception&) {
+        return dps_of(t, strength, focus);
+    }
+    return d;
+}
+
 void Bot::scout_ward(bc::champion& me) {
     if (!kScoutWards || round_ < ward_ready_round_ || on_spawn()) return;
     if (cheb(ward_pos_, pos_) <= kScoutWardMove) return;  // our ward already watches this area
@@ -2917,6 +3044,22 @@ bool Bot::go_home(bc::champion& me, bool urgent) {
         if (c.awake && c.strength > 0 && cheb(c.pos, pos_) <= c.range + 1) threatened = true;
     for (const auto& e : enemies_)
         if (cheb(e.pos, pos_) <= 7 && !harmless_on_spawn(e)) threatened = true;
+    if (kHurtFlee && hurt && round_ - last_champ_hurt_round_ <= kFleeMemory) {
+        // Get out of reach of whoever has been hitting us before trying to recall.
+        std::vector<std::pair<vec2, int>> threats;
+        for (int dy = -4; dy <= 4; ++dy)
+            for (int dx = -4; dx <= 4; ++dx) {
+                const vec2 p{pos_.x + dx, pos_.y + dy};
+                if (W.in_bounds(p) && W.bushes.get(p) && !visible_.get(p)) threats.push_back({p, 3});
+            }
+        for (const auto& s : sightings_)
+            if (round_ - s.round <= kFleeMemory + 2 && cheb(s.pos, pos_) <= 8) threats.push_back({s.pos, 4});
+        for (const auto& e : enemies_)
+            if (!harmless_on_spawn(e)) threats.push_back({e.pos, e.range + 1});
+        mark("hurt-flee");
+        if (!threats.empty() && step_away(me, threats)) return true;
+        return travel(me, W.spawn_poi);
+    }
     // Hit by someone we cannot see (a bush, the edge of our sight): the recall would only be cut.
     if (kRecallSafe > 0 && round_ - (kRecallSafe == 2 ? last_champ_hurt_round_ : last_hurt_round_) <= kRecallCalm) threatened = true;
     if (!threatened) {

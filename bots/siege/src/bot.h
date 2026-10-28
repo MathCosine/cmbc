@@ -27,6 +27,7 @@ struct SeenChamp {
     int range;
     int gems;
     float burst = 0;  // damage it can deal in one turn: basic attack(s) plus its biggest spell
+    float now = 0;    // damage per round over the next few turns from live cooldowns (kReadyFights)
     int reach = 1;    // tiles from which that burst can land next turn (walks, spells, dashes)
     bc::champion_type type{};
 };
@@ -271,6 +272,9 @@ private:
     vec2 last_pos_{-1, -1};
     int last_hurt_round_ = -1000;  // last round we lost health
     int last_champ_hurt_round_ = -1000;  // last round we lost more than nearby camps deal (kRecallSafe 2)
+    bool unseen_hit_ = false;            // hit this round by a champion none in sight could reach us from
+    void reveal_ward(bc::champion& me);
+    float dps_now(const bc::champion& c, bc::champion_type t, float strength, float focus) const;
     int capture_fail_ = 0;         // turns in a row we could not step toward our capture
     int capture_since_ = -1;       // round this capture claim started
     int yield_slot_ = -1;          // ally we are making way for in a corridor
