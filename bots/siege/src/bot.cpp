@@ -236,6 +236,28 @@ constexpr float kDashKill = 2.f;  // finish when its health is under this many o
 // Fields on 8 of 70 maps. Out of 140 against the v24 test build / Cassi & Issac / fishsim / hunter:
 // 71/125/92/107; on the field maps 11 of 16 head to head, 11 against 8 of 16 against fishsim (on).
 constexpr bool kFieldCamp = true;
+// Patches and camps: every camp's place and worth are known from the map at round 1, and walks
+// follow distance fields, but a camp's state is only known while in view (the engine refuses to
+// report groups out of sight). kShareClears: a teammate's status byte saying it is capturing group
+// g means g was just cleared, so every champion marks g taken (respawning about g.respawn rounds
+// after the capture) instead of walking there to find out.
+// Out of 140 against v28 / Cassi & Issac / fishsim / hunter (v28 70/126/106/119, farming 1,088):
+// 66/126/104/122, farming 1,112. Off.
+constexpr bool kShareClears = false;
+// Jackpot maps (one group holds 40%+ of the gems: 17 of 70). On the ladder (v20-v24) 1 win in 8,
+// 236 gems to 1,000 on average, 0 on 00vault and 00stampede; locally fishsim takes 01concentrated-
+// wealth's 71-gem camp 12 times to our 4-5, and the squad there arrived one champion at a time.
+// kJackpot (world.h) finds the jackpot. kJackpotPush: it is exempt from the opening's contested
+// penalty and scores kJackpotBonus times more for the squad. kRally: with enemies seen around the
+// jackpot in the last 60 rounds, a champion walking in waits about kRallyDist tiles out until two
+// teammates are with it or already there (at most kRallyMax rounds).
+// Out of 140 (as above): push 64/118/103/122, farming 1,082, jackpot clears against fishsim 134-87
+// (v28 131-86); push and rally 62/118/105/121, 1,081, clears 161-57.
+constexpr bool kJackpotPush = false;
+constexpr float kJackpotBonus = 2.f;
+constexpr bool kRally = true;
+constexpr int kRallyDist = 10;
+constexpr int kRallyMax = 25;
 constexpr int kFieldGroups = 3;
 constexpr int kFieldGems = 50;
 constexpr float kFieldBonus = 3.f;
@@ -778,7 +800,12 @@ void Bot::update_groups() {
         // Out of sight a reward does not wait: a teammate (or the enemy) captures it within a
         // few rounds and the group starts its respawn timer. Without this a champion that left
         // after the kill would never look at the group again.
-        if (g.state == GroupState::reward && round_ - g.seen_round > kRewardTimeout) {
+        if (kShareClears) {
+            if (g.state == GroupState::reward && round_ - std::max(g.seen_round, g.heard_round) > kRewardTimeout) {
+                g.state = GroupState::respawning;
+                g.respawn_round = (g.heard_round > g.seen_round ? g.heard_round + 1 : g.seen_round + kCaptureRounds + 1) + g.respawn;
+            }
+        } else if (g.state == GroupState::reward && round_ - g.seen_round > kRewardTimeout) {
             g.state = GroupState::respawning;
             g.respawn_round = g.seen_round + kCaptureRounds + 1 + g.respawn;
         }
@@ -887,6 +914,7 @@ bool Bot::opening_blocks(Group& g, bool allow_contested) {
     // The first v5 games showed why: with our side farmed out, falling back to any camp sent
     // the squad next to the enemy spawn (42% of early deaths there, against 19% before).
     if (!kSafeOpening || round_ >= kOpeningRounds) return false;
+    if (kJackpotPush && g.id == world().jackpot) return false;
     const bool theirs = enemy_side(g);  // also works out g.contested
     if (g.contested) return !allow_contested;
     return theirs;
@@ -1471,6 +1499,20 @@ void Bot::play_turn() {
             team_death_next_ = (team_death_next_ + 1) % static_cast<int>(team_deaths_.size());
         }
         slot_dead_[i] = dead;
+    }
+    if (kShareClears) {
+        // A teammate capturing a group: it was just cleared.
+        auto& W = world();
+        for (int i = 0; i < slots_ && i < kMaxSlots; ++i) {
+            if (i == slot_) continue;
+            const auto st = comms_.slot(i);
+            if (st.task != Task::capture || st.target < 0 || st.target >= static_cast<int>(W.groups.size())) continue;
+            auto& g = W.groups[st.target];
+            if (g.state == GroupState::respawning) continue;
+            g.state = GroupState::reward;
+            g.heard_round = round_;
+            g.awake = false;
+        }
     }
     moved_ = false;
     cast_done_ = false;
@@ -3127,7 +3169,9 @@ int Bot::dist_to_group(Group& g) {
     // The group's own field routes around every other camp. Without it (no fuel to build
     // it yet) a terrain-only search can lead straight through camps that wall it off.
     const bool exact = W.field(g.poi, kPlanFuel) != nullptr;
-    const int d = exact ? W.dist(g.poi, pos_) : dist_from_me(g.anchor);
+    int d = exact ? W.dist(g.poi, pos_) : dist_from_me(g.anchor);
+    // On our spawn (round 1, after a respawn) the draft's spawn walk stands in for the field.
+    if (kDraftHome && !exact && d == kUnreached && g.home >= 0 && W.ally_spawn.get(pos_)) d = g.home;
     // Terrain and camp tiles never move, so a group walled off from here stays that way.
     if (exact && d == kUnreached && W.group_id_at(pos_) < 0) {
         if (!g.unreachable) LOG("UNREACH r" << round_ << " " << bc::to_string(type_) << bc::to_string(pos_) << " g" << g.id << bc::to_string(g.anchor));
@@ -3655,6 +3699,10 @@ bool Bot::farm(bc::champion& me) {
         avoid_until_[target_ & 63] = round_ + 100;
         plan_round_ = -1000;
     }
+    if (kRally && task_ == Task::farm && rally_hold(g)) {
+        mark("rally");
+        return true;
+    }
     if (kRouteAhead && kRoutePlan && W.plan.ok && task_ == Task::farm && g.state == GroupState::alive) {
         const int walk = dist_to_group(g);
         float dps_there = 0;
@@ -3684,6 +3732,34 @@ bool Bot::farm(bc::champion& me) {
     return true;
 }
 
+bool Bot::rally_hold(Group& g) {
+    // Walking in to a contested jackpot: wait for company rather than arrive alone.
+    auto& W = world();
+    const int d = g.id == W.jackpot ? dist_to_group(g) : kUnreached;
+    if (d == kUnreached || d > kRallyDist + 2 || d < kRallyDist - 3) {
+        rally_since_ = -1;
+        return false;
+    }
+    bool contested = false;
+    for (const auto& s : sightings_)
+        if (s.count > 0 && round_ - s.round <= 60 && cheb(s.pos, g.anchor) <= 12) contested = true;
+    for (const auto& e : enemies_)
+        if (cheb(e.pos, g.anchor) <= 12) contested = true;
+    int with = 0, living = 0;
+    for (const auto& a : allies_seen_)
+        if (cheb(a.pos, pos_) <= 6 || cheb(a.pos, g.anchor) <= kRallyDist) ++with;
+    for (int i = 0; i < slots_; ++i) {
+        const auto st = comms_.slot(i);
+        if (i != slot_ && !(st.task == Task::other && st.target == kDead)) ++living;
+    }
+    if (!contested || with >= std::min(2, living)) {
+        rally_since_ = -1;
+        return false;
+    }
+    if (rally_since_ < 0) rally_since_ = round_;
+    return round_ - rally_since_ <= kRallyMax;
+}
+
 float Bot::squad_mods(Group& g, bool contested_now) {
     // Everything the squad's camp score multiplies by besides worth per round.
     auto& W = world();
@@ -3692,6 +3768,7 @@ float Bot::squad_mods(Group& g, bool contested_now) {
     if (enemy_side(g)) m *= enemy_side_factor(false);
     if (contested_now) m *= g.harmless ? kOpeningClusters : kOpeningContested;
     if (kHoldMiddle && held_altar_near(g.anchor)) m *= kHoldBonus;
+    if (kJackpotPush && g.id == W.jackpot) m *= kJackpotBonus;
     if (kAltarZoneBias > 0) m *= altar_zone(g);
     if (kFieldCamp && in_field(g.anchor)) m *= kFieldBonus;
     if (kMiddleBias > 0) {
