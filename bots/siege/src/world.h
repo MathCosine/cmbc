@@ -21,6 +21,10 @@ struct CampInfo {
     int seen_alive_round = -1;
 };
 
+inline constexpr bool kJackpot = false;  // see bot.cpp
+inline constexpr float kJackpotShare = 0.4f;
+inline constexpr int kJackpotGems = 40;
+
 struct Group {
     int id = 0;
     std::optional<bc::map::camp_group> handle;
@@ -43,6 +47,7 @@ struct Group {
     GroupState state = GroupState::alive;
     int respawn_round = 0;  // estimated round the group is alive again
     int seen_round = -1;
+    int heard_round = -1;   // last round a teammate's status said it was capturing this group (kShareClears)
     float hp_left = 0;
     bool awake = false;
     bool unreachable = false;
@@ -109,6 +114,8 @@ public:
     void plan_breach(std::uint64_t fuel_floor);
     // Groups nearest our spawn first: the order distance fields are precomputed in.
     std::vector<int> group_order;
+    // The jackpot: the group holding kJackpotShare+ of the map's gems (at least kJackpotGems), or -1.
+    int jackpot = -1;
 
     void init();
     // Computes a field if it is missing and enough fuel remains; returns null otherwise.
