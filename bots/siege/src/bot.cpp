@@ -216,6 +216,20 @@ constexpr bool kRouteAhead = false;
 // avoided for 150 rounds. On 01yellow-brick-road a champion "captured" a 600-gold strip beside the
 // enemy spawn for 360+ rounds: enemies standing in its region kept it from ever completing.
 constexpr int kCaptureTimeout = 40;  // 0 = off
+// Recall under fire. A recall takes 5 turns, any damage interrupts it, and starting one uses the
+// turn. go_home only checked for enemies in sight, so a champion hit from a bush started a recall,
+// was hit, started it again, and stood still until it died (ladder, rounds 162-170: Marcella from
+// 976 health to 0 beside tall grass, never moving or hitting back). Against fishsim a third of recall
+// starts (7 a game) came within 2 turns of taking damage. kRecallSafe: no recall within kRecallCalm
+// turns of taking damage (1: any damage; 2: more than the awake camps in reach deal, so enemy
+// champions); walk home instead.
+// Out of 140 against v28 / Cassi & Issac / fishsim / hunter (v28 70/126/106/119, an equivalent build
+// 68/123/109/120): mode 1 79/116/100/122, farming 1,103 against 1,088. On top of v29 (v29
+// 70/118/107/121, farming 1,103): mode 1 72/112/98/127, 1,110; mode 2 62/124/105/123, 1,122. Mode 1
+// lost 6-9 to both fish bots on both bases (it also skips recalls after camp hits, which almost
+// always come from a camp just killed); mode 2 is even locally, where no bot ambushes from bushes.
+constexpr int kRecallSafe = 2;
+constexpr int kRecallCalm = 2;
 constexpr int kAheadWalk = 10;
 constexpr int kAheadMargin = 4;
 // kLookCalm: look ahead only when the coast is clear (no enemy seen, no teammate lost, in the
@@ -1566,6 +1580,7 @@ void Bot::play_turn() {
     if ((kLearnEnemy || kDeathScale) && round_ % 250 == 0)
         LOG("SCALE r" << round_ << " " << bc::to_string(type_) << " seen " << dmg_seen_ << " expected " << dmg_expected_ << " scale " << enemy_scale());
     if (damage_taken_ > 0) last_hurt_round_ = round_;
+    if (kRecallSafe == 2 && damage_taken_ > incoming_camp_damage(pos_) + 1.f) last_champ_hurt_round_ = round_;
     last_hp_ = hp_;
     last_hp_round_ = round_;
 
@@ -2902,6 +2917,8 @@ bool Bot::go_home(bc::champion& me, bool urgent) {
         if (c.awake && c.strength > 0 && cheb(c.pos, pos_) <= c.range + 1) threatened = true;
     for (const auto& e : enemies_)
         if (cheb(e.pos, pos_) <= 7 && !harmless_on_spawn(e)) threatened = true;
+    // Hit by someone we cannot see (a bush, the edge of our sight): the recall would only be cut.
+    if (kRecallSafe > 0 && round_ - (kRecallSafe == 2 ? last_champ_hurt_round_ : last_hurt_round_) <= kRecallCalm) threatened = true;
     if (!threatened) {
         try {
             me.recall();

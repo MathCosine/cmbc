@@ -270,6 +270,7 @@ private:
     std::array<CachedDist, 64> group_dist_{};
     vec2 last_pos_{-1, -1};
     int last_hurt_round_ = -1000;  // last round we lost health
+    int last_champ_hurt_round_ = -1000;  // last round we lost more than nearby camps deal (kRecallSafe 2)
     int capture_fail_ = 0;         // turns in a row we could not step toward our capture
     int capture_since_ = -1;       // round this capture claim started
     int yield_slot_ = -1;          // ally we are making way for in a corridor
