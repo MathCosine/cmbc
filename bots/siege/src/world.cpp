@@ -110,7 +110,17 @@ void World::init() {
     spawn_poi = add_poi({}, &bc::map::spawn_region(team::ally), true);
     enemy_spawn_poi = add_poi({}, &enemy_region, false);
     for (auto altar : altars) altar_poi.push_back(add_poi({altar}, nullptr, false));
-    if (kRoutePlan) {
+    bank_altars.clear();
+    for (std::size_t i = 0; i < (kBankCost ? altars.size() : 0); ++i)
+        if (altar_side(altars[i], ally_centre, enemy_centre) <= kBankMaxSide) bank_altars.push_back(static_cast<int>(i));
+    if (kBankCost && bank_altars.empty())
+        for (std::size_t i = 0; i < altars.size(); ++i)
+            if (altar_side(altars[i], ally_centre, enemy_centre) <= 1) bank_altars.push_back(static_cast<int>(i));
+    if (kBankCost && bank_altars.empty())
+        for (std::size_t i = 0; i < altars.size(); ++i) bank_altars.push_back(static_cast<int>(i));
+    if (kBankCost) bank_cache.assign(groups.size(), kBankUnknown);
+    bank_median = -1;
+    if (kDraftPlan) {
         std::vector<vec2> anchors;
         anchors.reserve(groups.size());
         for (const auto& g : groups) anchors.push_back(g.anchor);
@@ -143,6 +153,41 @@ const bc::distance_field* World::field(int poi_id, std::uint64_t fuel_floor) {
     field->compute((blocked_board | camps) & ~roots, roots, visited);
     poi.field = std::move(field);
     return poi.field.get();
+}
+
+std::uint16_t World::bank_dist(int g) {
+    if (g < 0 || g >= static_cast<int>(groups.size())) return kUnreached;
+    if (plan.ok && plan.bank[g] != kUnreached) return plan.bank[g];
+    if (bank_cache[g] != kBankUnknown) return bank_cache[g];
+    // Only from fields already made (altar fields are precomputed first): never start one here.
+    std::uint16_t best = kUnreached;
+    for (int i : bank_altars) {
+        if (!has_field(altar_poi[i])) return kUnreached;
+        best = std::min(best, dist_on(*pois[altar_poi[i]].field, groups[g].anchor));
+    }
+    bank_cache[g] = best;
+    return best;
+}
+
+int World::bank_ref() {
+    if (bank_median >= 0) return bank_median;
+    // Known once the note loaded or every bank altar has its field.
+    bool ready = plan.ok;
+    if (!ready) {
+        ready = true;
+        for (int i : bank_altars)
+            if (!has_field(altar_poi[i])) ready = false;
+    }
+    if (!ready) return -1;
+    std::vector<int> all;
+    for (std::size_t g = 0; g < groups.size(); ++g)
+        if (groups[g].gems > 0) {
+            const int d = bank_dist(static_cast<int>(g));
+            if (d != kUnreached) all.push_back(d);
+        }
+    if (all.empty()) return bank_median = 0;
+    std::nth_element(all.begin(), all.begin() + all.size() / 2, all.end());
+    return bank_median = all[all.size() / 2];
 }
 
 std::uint16_t World::dist(int poi, vec2 p, std::uint64_t fuel_floor) {

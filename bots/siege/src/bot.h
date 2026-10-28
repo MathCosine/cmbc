@@ -134,6 +134,8 @@ private:
     bool blocks_altar(const Group& g) const;
     bool any_altar_open() const;
     float heal_rounds(const Group& g, float dps, float hp);
+    float bank_rounds(const Group& g) const;
+    float with_bank(float rounds, const Group& g) const;
     int home_dist(const Group& g) const;
     float siege_rounds(const Group& g, float team_dps, float team_hp, bool unlocks);
     void set_status(Task task, int target);

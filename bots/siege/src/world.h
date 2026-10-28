@@ -119,7 +119,15 @@ public:
     bool has_field(int poi) const { return pois[poi].field != nullptr; }
     // Spend spare fuel precomputing fields, nearest groups first.
     void precompute(std::uint64_t fuel_floor);
-    RoutePlan plan;  // walking distances measured during the draft (kRoutePlan)
+    RoutePlan plan;  // walking distances measured during the draft (kRoutePlan, kBankCost)
+    // Walk from a group to the nearest altar on our side or in the middle: from the draft note,
+    // else from the altar fields once they all exist (cached); kUnreached when unknown.
+    std::uint16_t bank_dist(int g);
+    std::vector<std::uint16_t> bank_cache;  // kBankUnknown until worked out
+    std::vector<int> bank_altars;           // indices into altars
+    // kBankRelative: the median bank walk over camps with gems; -1 until every distance is known.
+    int bank_ref();
+    int bank_median = -1;
 
     int group_id_at(vec2 p) const { return camp_grid.get(p) ? group_at[p.y * w + p.x] : -1; }
     CampInfo* camp_info_at(vec2 p) {

@@ -3215,6 +3215,26 @@ float Bot::siege_rounds(const Group& g, float team_dps, float team_hp, bool unlo
     return (std::ceil(trips) - 1) * (2.f * home + 15.f);
 }
 
+float Bot::bank_rounds(const Group& g) const {
+    // The camp's share of round trips to bank its gems: a bag holds kCarryGems.
+    if (!kBankCost || g.gems <= 0) return 0;
+    auto& W = world();
+    int d = W.bank_dist(g.id);
+    if (d == kUnreached) return 0;
+    if (kBankRelative) {
+        const int ref = W.bank_ref();
+        if (ref < 0) return 0;
+        d -= ref;
+    }
+    return kBankWeight * static_cast<float>(g.gems) * 2.f * static_cast<float>(d) / kCarryGems;
+}
+
+float Bot::with_bank(float rounds, const Group& g) const {
+    // A camp beside an altar gains at most a quarter of its rounds.
+    if (!kBankCost) return rounds;
+    return rounds + std::max(bank_rounds(g), -0.25f * rounds);
+}
+
 bool Bot::any_altar_open() const {
     for (int i = 0; i < static_cast<int>(world().altars.size()); ++i)
         if (altar_open(i)) return true;
@@ -3282,7 +3302,7 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
         }
         const float value = g.value(kGoldWeight) + (unlocks ? 1000.f : 0.f);
         const int wait_g = g.state == GroupState::respawning ? std::max(0, g.respawn_round - (round_ + d)) : 0;
-        const float rounds = d + wait_g + fixed + extra;
+        const float rounds = with_bank(d + wait_g + fixed + extra, g);
         const float mods = squad_mods(g, contested_now);
         const float score = value / rounds * mods;
         if (kRoutePlan && W.plan.ok && g.id < 64) worth[g.id] = g.value(kGoldWeight) * mods;
@@ -3371,7 +3391,7 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
         }
         const int d = dist_to_group(g);
         if (d == kUnreached || !g.alive_by(round_ + d + 5)) continue;
-        float score = g.value(kGoldWeight) / group_rounds(g, team_dps, d);
+        float score = g.value(kGoldWeight) / with_bank(group_rounds(g, team_dps, d), g);
         if (soft) score *= kOpeningClusters;
         if (kAltarZoneBias > 0) score *= altar_zone(g);
         if (kFieldCamp && in_field(g.anchor)) score *= kFieldBonus;
@@ -3528,7 +3548,7 @@ void Bot::choose_task(bc::champion& me) {
         if (!g.alive_by(round_ + d + 5)) continue;
         // A side job has to be done (there, clear, capture, back) before the squad's camp returns.
         if (waiting && 2 * d + forecast(g, my_dps).rounds + kCaptureRounds > squad_wait) continue;
-        float score = g.value(kGoldWeight) / (group_rounds(g, my_dps, d) + heal_rounds(g, my_dps, hp_));
+        float score = g.value(kGoldWeight) / with_bank(group_rounds(g, my_dps, d) + heal_rounds(g, my_dps, hp_), g);
         if (soft) score *= kOpeningClusters;
         if (enemy_side(g)) score *= enemy_side_factor(true);
         score *= target_danger(g);
