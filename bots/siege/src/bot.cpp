@@ -869,6 +869,36 @@ constexpr bool kHuntBag = false;
 constexpr bool kLockDenial = true;
 constexpr bool kNearestLock = true;  // lock detours go to the nearest open altar, not the first listed
 constexpr float kAltarZoneBias = 0.4f;
+// v40 ladder against fbot5, 00breadcrumbs (lost 220-1,004): the only altar is in the middle, ringed by
+// 7-8 gem patches. Their three held the ring from round ~200, banking every patch (99 tributes,
+// 10 gems each), while ours farmed our side spread out and died one at a time walking in with
+// 14-28 gems (254 gems lost on death to their 46). kAltarControl, on maps with no altar on our side:
+// camps within kControlRange of such an altar score kControlBias more (instead of 6 tiles and
+// kAltarZoneBias), and within kControlRange of it we bank from kControlCarry gems. Mode 1: maps with
+// a single altar, in the middle or on their side (breadcrumbs, the gemcombats, guardians,
+// treasure-box, anvil...); mode 2: every map with no altar on our side (44 of 70). On engine 2.0.0,
+// out of 140 against v40 / meta / hunter / fishsim (v40 -/109/127/99): mode 1 69/109/129/99, mode 2
+// 73/106/125/97; 1,122 and 1,124 rounds to 1,000 gems (v40 1,114). On 00breadcrumbs against meta,
+// mode 1 lost 541-1,005 (v40 425-1,004), 66 tributes to 30, 137 gems lost on death to 206. Off;
+// a ladder test with kAltarGather is out (siege-v40-gather-test.zip).
+constexpr int kAltarControl = 0;
+constexpr int kControlRange = 8;
+constexpr float kControlBias = 1.5f;
+constexpr int kControlCarry = 7;
+// v40 altar-control test on 00breadcrumbs against fbot5 (lost 109-1,000, 23 deaths to 4, 14 of ours
+// alone near the altar; 7 gems banked by round 300 to their 198): we walked in one at a time and
+// never took the altar. kAltarGather, on the same maps as kAltarControl (needs it on): a champion
+// whose next job is in the altar zone (a camp within kControlRange, or a bag to bank) while enemies
+// were seen within 10 of the altar in the last kGatherRecent rounds waits at a gather point
+// kGatherDist tiles from the altar on the way home until kGatherNeed of us (or every living
+// teammate) are there, for up to kGatherWait rounds; then the group goes in (no new wait for
+// kGatherGo rounds).
+constexpr bool kAltarGather = false;
+constexpr int kGatherDist = 10;
+constexpr int kGatherNeed = 3;
+constexpr int kGatherRecent = 40;
+constexpr int kGatherWait = 40;
+constexpr int kGatherGo = 25;
 // Home defense: against teams that come to us (32 of our 54 deaths on 01elk-arena were in our own
 // third), a losing fight near home falls back onto our spawn, where we heal every round and they
 // cannot step, instead of being fought out in the open; only while 2+ enemies were seen together in
@@ -1413,7 +1443,98 @@ bool Bot::on_my_camp() const {
 
 bool Bot::enemy_passive() const { return round_ > 300 && !enemy_recent(250) && recent_team_deaths(400) == 0; }
 
+bool Bot::contested_altars_only() const {
+    // No altar on our side: every bank is made where their champions can meet us (kAltarControl).
+    if (contested_only_ < 0) {
+        bool any = false, ours = false;
+        for (auto a : world().altars) {
+            any = true;
+            if (altar_exposure(a) == 0) ours = true;
+        }
+        contested_only_ = any && !ours && (kAltarControl >= 2 || world().altars.size() == 1) ? 1 : 0;
+    }
+    return contested_only_ == 1;
+}
+
+bool Bot::gather_hold(bc::champion& me) {
+    // kAltarGather: on a map whose only altar is contested, a champion headed into the altar zone
+    // while enemies hold it waits at the gather point (kGatherDist tiles from the altar, on the way
+    // home) until kGatherNeed of us (or every living teammate) stand there, then all go in.
+    if (!contested_altars_only() || task_ == Task::capture || capturing_here() || on_spawn()) return false;
+    auto& W = world();
+    if (W.altars.empty()) return false;
+    const vec2 altar = W.altars.front();
+    if (round_ < gather_go_until_) return false;
+    if (gather_point_.x < 0) {
+        const auto* f = W.field(W.spawn_poi, 20000);
+        if (!f) return false;
+        vec2 p{-1, -1};
+        std::uint16_t best = kUnreached;
+        for (auto d : kDirs) {
+            const vec2 n = altar + d;
+            if (W.in_bounds(n) && !W.blocked.get(n) && f->get(n) < best) {
+                best = f->get(n);
+                p = n;
+            }
+        }
+        if (p.x < 0) return false;
+        for (int i = 0; i < kGatherDist && cheb(p, altar) < kGatherDist; ++i) {
+            const auto mv = f->next_move_from(p);
+            if (!mv) break;
+            p += *mv;
+        }
+        gather_point_ = p;
+    }
+    // Headed into the zone: a camp near the altar, or a bag to bank; or a teammate waiting there.
+    const bool banking = gems_ >= carry_gems();
+    const bool zone_job = target_ >= 0 && target_ < static_cast<int>(W.groups.size()) && cheb(W.groups[target_].anchor, altar) <= kControlRange;
+    bool called = false;
+    for (int i = 0; i < slots_; ++i)
+        if (i != slot_ && comms_.slot(i).task == Task::other && comms_.slot(i).target == kGather) called = true;
+    if (!banking && !zone_job && !called) {
+        gather_since_ = -1;
+        return false;
+    }
+    // Held by them: enemies seen near the altar lately (a teammate's call says so too).
+    bool hot = called;
+    for (const auto& s : sightings_)
+        if (s.count > 0 && round_ - s.round <= kGatherRecent && cheb(s.pos, altar) <= 10) hot = true;
+    for (const auto& e : enemies_)
+        if (!harmless_on_spawn(e) && cheb(e.pos, altar) <= 10) hot = true;
+    if (!hot) {
+        gather_since_ = -1;
+        return false;
+    }
+    int living = 0;
+    for (int i = 0; i < slots_; ++i)
+        if (i != slot_ && !slot_dead_[i]) ++living;
+    const int needed = std::min(kGatherNeed, 1 + living);
+    int group = cheb(pos_, gather_point_) <= 4 ? 1 : 0;
+    for (const auto& a : allies_seen_)
+        if (cheb(a.pos, gather_point_) <= 4) ++group;
+    if (group >= needed) {
+        gather_since_ = -1;
+        gather_go_until_ = round_ + kGatherGo;
+        return false;
+    }
+    if (gather_since_ < 0) gather_since_ = round_;
+    if (round_ - gather_since_ > kGatherWait) {
+        gather_go_until_ = round_ + kGatherGo;
+        gather_since_ = -1;
+        return false;
+    }
+    mark("gather-hold");
+    set_status(Task::other, kGather);
+    if (cheb(pos_, gather_point_) > 1) approach_unit(me, gather_point_, 1);
+    return true;
+}
+
 int Bot::carry_gems() const {
+    if (kAltarControl > 0 && contested_altars_only()) {
+        // Near the altar, bank every patch: a death there costs a few gems, not a bag.
+        for (auto a : world().altars)
+            if (cheb(a, pos_) <= kControlRange) return kControlCarry;
+    }
     if (pressured()) return kSmallBag;
     if (kMarcellaBank && type_ == bc::champion_type::marcella) return kBankerCarry;
     return kSmallBags ? kSmallCarry : kCarryGems;
@@ -1806,9 +1927,10 @@ float Bot::altar_zone(const Group& g) const {
     // when their champions come to bank. Altars and camps never move: worked out once per group.
     if (g.zone >= 0) return g.zone;
     float z = 1.f;
+    const bool control = kAltarControl > 0 && contested_altars_only();
     for (auto a : world().altars)
-        if (cheb(a, g.anchor) <= 6 && altar_exposure(a) > 0) {
-            z = 1.f + kAltarZoneBias;
+        if (cheb(a, g.anchor) <= (control ? kControlRange : 6) && altar_exposure(a) > 0) {
+            z = 1.f + (control ? kControlBias : kAltarZoneBias);
             break;
         }
     const_cast<Group&>(g).zone = z;
@@ -2220,6 +2342,8 @@ void Bot::act(bc::champion& me) {
     }
     mark("home");
     if (go_home(me, false)) return;
+    mark("gather");
+    if (kAltarGather && gather_hold(me)) return;
     mark("tribute");
     if (tribute(me)) return;
     mark("capture");

@@ -291,6 +291,8 @@ private:
     int hidden_grass(vec2 p) const;
     bool safe_wait_step(bc::champion& me, const Group& g, int keep);
     bool hole_escape(bc::champion& me, const std::vector<std::pair<vec2, int>>& threats);
+    bool gather_hold(bc::champion& me);
+    bool contested_altars_only() const;
     int combo_hitters(const SeenChamp& e) const;
     bool escape_recall(bc::champion& me);
     bool crystal_escape(bc::champion& me, const std::vector<std::pair<vec2, int>>& threats);
@@ -306,6 +308,10 @@ private:
     int chase_ignore_until_ = -1000;
     int way_pick_ = -1;            // kOnTheWay: the stop the last squad choice put first, or -1
     int way_check_round_ = -1000;
+    vec2 gather_point_{-1, -1};   // kAltarGather
+    int gather_since_ = -1;
+    int gather_go_until_ = -1000;
+    mutable int contested_only_ = -1;  // kAltarControl: 1 when no altar is on our side
     bool camp_attack_ = false;     // attack_target called on a camp (kSaveReset)
     bool scan_partial_ = false;    // kFullScan: the last squad scan stopped early for fuel
     int partial_squad_ = -1;       // squad camp chosen from such a scan, chosen again later
