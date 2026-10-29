@@ -220,6 +220,100 @@ constexpr bool kRouteAhead = false;
 // avoided for 150 rounds. On 01yellow-brick-road a champion "captured" a 600-gold strip beside the
 // enemy spawn for 360+ rounds: enemies standing in its region kept it from ever completing.
 constexpr int kCaptureTimeout = 40;  // 0 = off
+// Recall under fire. A recall takes 5 turns, any damage interrupts it, and starting one uses the
+// turn. go_home only checked for enemies in sight, so a champion hit from a bush started a recall,
+// was hit, started it again, and stood still until it died (ladder, rounds 162-170: Marcella from
+// 976 health to 0 beside tall grass, never moving or hitting back). Against fishsim a third of recall
+// starts (7 a game) came within 2 turns of taking damage. kRecallSafe: no recall within kRecallCalm
+// turns of taking damage (1: any damage; 2: more than the awake camps in reach deal, so enemy
+// champions); walk home instead.
+// Out of 140 against v28 / Cassi & Issac / fishsim / hunter (v28 70/126/106/119, an equivalent build
+// 68/123/109/120): mode 1 79/116/100/122, farming 1,103 against 1,088. On top of v29 (v29
+// 70/118/107/121, farming 1,103): mode 1 72/112/98/127, 1,110; mode 2 62/124/105/123, 1,122. Mode 1
+// lost 6-9 to both fish bots on both bases (it also skips recalls after camp hits, which almost
+// always come from a camp just killed); mode 2 is even locally, where no bot ambushes from bushes.
+constexpr int kRecallSafe = 2;
+constexpr int kRecallCalm = 2;
+// Fight inputs (v31 tests).
+// kEngageFloor: below this share of our health we no longer walk into a fight (engage an enemy up
+// to 5 tiles out, join a teammate's fight); we still hit whatever is already in reach. Health only
+// counted against incoming damage, so a champion at 30% with nobody on it yet walked in. 0 = off.
+constexpr float kEngageFloor = 0.4f;
+// Grass hides whoever stands in it from everyone outside the patch (GameRules: bushes block sight).
+// kUnseenWard: hit by an enemy champion when no enemy in sight could have reached us, drop our ward
+// on the spot within 2 tiles that sees the most hidden grass, so the attacker shows.
+// kHurtFlee: hurt enough to go home and hit by champions in the last kFleeMemory turns: no recall;
+// step away from the hidden grass and the enemies seen around us, toward home, then recall.
+constexpr bool kUnseenWard = true;
+constexpr bool kHurtFlee = true;
+constexpr int kFleeMemory = 4;
+// kBushHold: a ranged champion waiting for an enemy to walk into its range (the "hold") steps into
+// an adjacent grass tile when that leaves it no more exposed: unseen, it cannot be targeted.
+constexpr bool kBushHold = true;
+// kReadyFights: enemy cooldowns are readable in sight. Fight math counts every champion in sight
+// (enemies, teammates, us) by what it can deal over the next kReadyHorizon turns from its live
+// cooldowns (a ready spell once, one on cooldown not at all) instead of spells averaged over 8.
+constexpr bool kReadyFights = false;
+constexpr int kReadyHorizon = 3;
+// v32 tests. Probes showed what the engine shows of champions in sight: ability cooldowns, stuns
+// and shields; and of every enemy anywhere, whether it is alive (bc::champions(team::enemy)).
+// 1 kStunBuffs: a stun is wasted on an enemy already stunned (read from its buffs; the old check
+//   guessed from "cannot move", which also shows on one that has just moved) or immune; with it a
+//   second stunner waits a turn and its stun lands as the first wears off.
+// 2 kFocusStunned: a stunned enemy in reach becomes the target, and the team's focus.
+// 3 kPunish: an enemy whose damage and stun spells all have kPunishTurns+ cooldown left counts with
+//   its basic attacks only in the fight math.
+// 4 kShieldHp: an enemy's shield counts as health (fight math, finishing blows, target choice).
+// 5 kSafeWait: waiting at a camp with enemies seen in the last kSafeWaitRecent rounds, step to a
+//   tile beside fewer hidden grass tiles (still in reach of the camp).
+// 6 kGrassRetreat: retreat steps count grass as one tile further from the threats (enemies
+//   outside a patch cannot see in).
+// 7 kPowerPlay: with 2+ enemies dead, contested camps are not held back in the opening, solo jobs
+//   there are allowed, contested and enemy-side camps score kPowerPlayBonus more, and no rally.
+// 8 kHealFocus: Willow heals the teammate losing health fastest (what it lost since last turn
+//   counts twice), not only the one missing most.
+// 9 kCrystalEscape: carry a teleport crystal (10 gold); in danger with 3 turns of health to spare,
+//   jump to a tile within 3 that is kCrystalSave+ tiles nearer home on foot (across a wall or hole).
+// 10 kSiegeEarly: before kSiegeFrom, a camp that needs trips home counts when it scores
+//   kSiegeEarlyEdge times better than anything else (01starvation: the 88-gem elk between the
+//   altars needed 6,846 damage taken against 4,355 team health, so for 500 rounds the squad walked
+//   100+ tiles between 4-gem wolves and 40-gold clusters, and earned 248 gold by round 500).
+constexpr bool kStunBuffs = true;
+constexpr bool kFocusStunned = true;
+constexpr bool kPunish = true;
+constexpr int kPunishTurns = 4;
+constexpr bool kShieldHp = true;
+constexpr bool kSafeWait = true;
+constexpr int kSafeWaitRecent = 80;
+constexpr bool kGrassRetreat = true;
+constexpr bool kPowerPlay = true;
+constexpr float kPowerPlayBonus = 1.5f;
+constexpr bool kHealFocus = true;
+constexpr bool kCrystalEscape = true;
+constexpr int kCrystalSave = 6;
+constexpr bool kSiegeEarly = true;
+// 11 kRallyAll (v31 ladder, 01starvation rounds 300-800: their four moved as one group below the
+// middle while ours walked in one or two at a time from the left and died, 46 deaths to 17 on
+// 01starfish): the rally for every squad camp, not only the jackpot. With enemies seen within 12
+// tiles of it in the last 60 rounds, or 2+ of us dead in the last 100 rounds and it is contested
+// or on their side, wait about kRallyDist tiles out until the teammates with us (or already there)
+// match the most enemies seen there at once less one, at most kRallyAllMax rounds. Not while they
+// are short-handed (kPowerPlay).
+// Out of 140 against v31: everything on 47, without this 66, v31 + this alone 58 (gems 658 to 801):
+// it waited at nearly every contested camp. Mode 2 waits only for a pack (3+ enemies seen there at
+// once, or 2+ of us dead lately) and only while a teammate heading for the same camp is still on
+// its way, at most kRallyPackMax rounds. 0 off, 1 as first written, 2 packs. Mode 2: 58 against v31,
+// 64 against the same build without it, 119/104/118 against Cassi & Issac / fishsim / hunter
+// (without 123/101/120); locally waiting only costs, as no sparring bot moves as a pack.
+constexpr int kRallyAll = 0;
+constexpr int kRallyAllMax = 30;
+constexpr int kRallyPackMax = 15;
+constexpr float kSiegeEarlyEdge = 2.f;
+// Out of 140 on top of v30 (v30 build 70/124/105/123; this code with all four off 68/124/108/123):
+// floor 0.4 62/128/105/124 (deaths against fish 6.0/8.7, was 6.9/9.7); ward + flee 67/127/103/119;
+// bush hold 67/122/113/124; ready fights 71/122/98/120 (off). Floor, ward, flee and bush hold
+// together: 79 against the all-off build, 72/125/104/127 against v30 and the sparring bots, deaths
+// 6.5/8.6/10.9 a game against 6.8/9.8/12.6, farming 1,132 against 1,144 rounds. On (v31 test).
 constexpr int kAheadWalk = 10;
 constexpr int kAheadMargin = 4;
 // kLookCalm: look ahead only when the coast is clear (no enemy seen, no teammate lost, in the
@@ -704,6 +798,7 @@ void Bot::init(bc::champion& me) {
     ranged_ = range_ > 1;
     tank_ = tank_type(type_);
     allies_ = bc::champions(team::ally);
+    if (kPowerPlay) enemy_roster_ = bc::champions(team::enemy);
     slots_ = std::min<int>(static_cast<int>(allies_.size()), kMaxSlots);
     for (int i = 0; i < static_cast<int>(allies_.size()); ++i) {
         if (allies_[i] == me) slot_ = i;
@@ -786,6 +881,40 @@ void Bot::observe(bc::champion& me) {
         s.dps = cached.dps;
         s.burst = cached.burst;
         s.reach = threat_for(t).reach;
+        s.now = s.dps;
+        if (kReadyFights && cheb(s.pos, pos_) <= 10) s.now = dps_now(c, t, c.strength(), c.focus());
+        if ((kStunBuffs || kFocusStunned || kShieldHp) && enemy && cheb(s.pos, pos_) <= 8) {
+            try {
+                for (const auto& b : c.buffs()) {
+                    if (const auto* st = std::get_if<bc::buff_stun>(&b)) s.stunned = std::max(s.stunned, static_cast<int>(st->duration));
+                    else if (const auto* sh = std::get_if<bc::buff_shield>(&b)) s.shield += sh->value;
+                }
+            } catch (const std::exception&) {
+            }
+            if (kShieldHp) s.hp += s.shield;
+        }
+        if (kPunish && enemy && cheb(s.pos, pos_) <= 8) {
+            int spells = 0, down = 0;
+            try {
+                for (const auto& ab : c.abilities()) {
+                    const auto& info = ab.info();
+                    if (!info) continue;
+                    bool offensive = false;
+                    std::visit([&](const auto& p) {
+                        using T = std::decay_t<decltype(p)>;
+                        offensive = std::is_same_v<T, bc::ability_damage> || std::is_same_v<T, bc::ability_cc> || std::is_same_v<T, bc::ability_aoe_damage>;
+                    }, *info);
+                    if (!offensive) continue;
+                    ++spells;
+                    if (ab.cooldown() >= kPunishTurns) ++down;
+                }
+                if (spells > 0 && down == spells) {
+                    s.disarmed = true;
+                    s.basic = c.strength() * (model_for(t).strength >= 1.5f ? 1.5f : 1.f);
+                }
+            } catch (const std::exception&) {
+            }
+        }
         return s;
     };
     enemies_.clear();
@@ -925,6 +1054,7 @@ bool Bot::opening_blocks(Group& g, bool allow_contested) {
     // the squad next to the enemy spawn (42% of early deaths there, against 19% before).
     if (!kSafeOpening || round_ >= kOpeningRounds) return false;
     if (kJackpotPush && g.id == world().jackpot) return false;
+    if (power_play() && !enemy_side(g)) return false;
     const bool theirs = enemy_side(g);  // also works out g.contested
     if (g.contested) return !allow_contested;
     return theirs;
@@ -1446,6 +1576,7 @@ bool Bot::unsafe_alone(Group& g) {
     // Ground the enemy holds: our last death or a recent sighting nearby, or the contested middle
     // while they are about. Somewhere to go as a squad, not alone.
     enemy_side(g);  // works out g.contested
+    if (power_play() && !g.contested && g.side != 1) return false;
     if (round_ - death_round_ <= 150 && cheb(death_pos_, g.anchor) <= 8) return true;
     for (const auto& s : sightings_)
         if (round_ - s.round <= kSoloDangerRounds && cheb(s.pos, g.anchor) <= 8) return true;
@@ -1584,6 +1715,39 @@ void Bot::play_turn() {
     if ((kLearnEnemy || kDeathScale) && round_ % 250 == 0)
         LOG("SCALE r" << round_ << " " << bc::to_string(type_) << " seen " << dmg_seen_ << " expected " << dmg_expected_ << " scale " << enemy_scale());
     if (damage_taken_ > 0) last_hurt_round_ = round_;
+    if (kPowerPlay && !enemy_roster_.empty()) {
+        int alive = 0;
+        for (const auto& c : enemy_roster_) {
+            try {
+                alive += c.is_alive() ? 1 : 0;
+            } catch (const std::exception&) {
+                ++alive;
+            }
+        }
+        enemies_alive_ = alive;
+    }
+    if (kHealFocus) {
+        // Health each teammate lost since last turn (kept per slot).
+        ally_drop_.fill(0.f);
+        for (const auto& a : allies_seen_)
+            for (int i = 0; i < slots_ && i < kMaxSlots; ++i)
+                if (allies_[i] == a.handle) {
+                    if (ally_seen_round_[i] == round_ - 1) ally_drop_[i] = std::max(0.f, ally_last_hp_[i] - a.hp);
+                    ally_last_hp_[i] = a.hp;
+                    ally_seen_round_[i] = round_;
+                }
+    }
+    if (kRecallSafe == 2 || kUnseenWard || kHurtFlee) {
+        const float from_champs = damage_taken_ - incoming_camp_damage(pos_);
+        unseen_hit_ = false;
+        if (from_champs > 1.f) {
+            last_champ_hurt_round_ = round_;
+            // None of the enemies in sight could have reached us: someone is hidden.
+            unseen_hit_ = true;
+            for (const auto& e : enemies_)
+                if (cheb(e.pos, pos_) <= std::max(e.reach, 4) + 1) unseen_hit_ = false;
+        }
+    }
     last_hp_ = hp_;
     last_hp_round_ = round_;
 
@@ -1650,6 +1814,7 @@ void Bot::act(bc::champion& me) {
     if (at_spawn || type_ == bc::champion_type::tavi) shop(me, at_spawn || (kLockDenial && type_ == bc::champion_type::tavi));
     mark("locks");
     place_lock(me);
+    if (kUnseenWard && unseen_hit_) reveal_ward(me);
     scout_ward(me);
 
     mark("enemies");
@@ -1733,7 +1898,7 @@ void Bot::fire_spells(bool retreating) {
         const bool offensive = sp.kind == bc::ability_kind::damage || sp.kind == bc::ability_kind::cc || sp.kind == bc::ability_kind::aoe_damage;
         if (!offensive || (sp.exclusive && (retreating || moved_))) continue;
         const SeenChamp* best = nullptr;
-        const bool stun = kStunDiscipline && sp.kind == bc::ability_kind::cc;
+        const bool stun = (kStunDiscipline || kStunBuffs) && sp.kind == bc::ability_kind::cc;
         if ((sp.kind == bc::ability_kind::cc || (sp.kind == bc::ability_kind::aoe_damage && sp.duration > 0)) && !stun_turn()) continue;
         for (const auto& e : enemies_) {
             if (world().enemy_spawn.get(e.pos) || cheb(e.pos, pos_) > static_cast<int>(sp.range)) continue;
@@ -1755,6 +1920,7 @@ bool stun_immune(bc::champion_type t) {
 
 bool Bot::stun_wasted(const SeenChamp& e) const {
     if (stun_immune(e.type)) return true;
+    if (kStunBuffs) return e.stunned > 0;
     if (!kStunOverlap) return false;
     try {
         const auto st = e.handle.state();
@@ -1859,13 +2025,13 @@ bool Bot::fight_enemies(bc::champion& me) {
         hold_turns_ = 0;
         return false;
     }
-    const float my_dps = dps_of(type_, strength_, focus_);
+    const float my_dps = kReadyFights ? dps_now(me, type_, strength_, focus_) : dps_of(type_, strength_, focus_);
     float ally_dps = my_dps, ally_hp = hp_;
     // Count allies as far out as enemies: a shorter ally range made even fights look lost.
     const int ally_range = kStandAndFight ? 8 : 6;
     for (const auto& a : allies_seen_)
         if (cheb(a.pos, pos_) <= ally_range) {
-            ally_dps += a.dps;
+            ally_dps += kReadyFights ? a.now : a.dps;
             ally_hp += a.hp;
         }
     float enemy_dps = 0, enemy_hp = 0, threat = 0, burst = 0, expect = 0;
@@ -1876,12 +2042,13 @@ bool Bot::fight_enemies(bc::champion& me) {
     for (const auto& e : enemies_) {
         if (harmless_on_spawn(e)) continue;
         const int d = cheb(e.pos, pos_);
+        const float edps = kReadyFights ? e.now : kPunish && e.disarmed ? e.basic : e.dps;
         if (d <= sense) {
-            enemy_dps += e.dps;
+            enemy_dps += edps;
             enemy_hp += e.hp;
         }
         if (d <= e.range + 1) {
-            threat += e.dps;
+            threat += edps;
             // Our share when it can also hit teammates beside us.
             if (kLearnEnemy) {
                 int others = 0;
@@ -1980,6 +2147,16 @@ bool Bot::fight_enemies(bc::champion& me) {
             if (enemy_id(e) == comms_.focus() && huntable(e) && cheb(e.pos, pos_) <= reach) target = &e;
         if (target) comms_.set_focus(enemy_id(*target));
     }
+    if (kFocusStunned) {
+        // A stunned enemy can neither hit back nor run: everyone in reach takes it.
+        const SeenChamp* held = nullptr;
+        for (const auto& e : enemies_)
+            if (huntable(e) && e.stunned > 0 && cheb(e.pos, pos_) <= reach && (!held || e.hp < held->hp)) held = &e;
+        if (held) {
+            target = held;
+            if (slots_ <= 5) comms_.set_focus(enemy_id(*held));
+        }
+    }
     const bool can_finish = target && target->hp <= strength_ * 1.05f;
     // One-turn burst decides whether we survive the next round; averaged damage hid spell
     // nukes and let enemies one-shot us.
@@ -2065,7 +2242,11 @@ bool Bot::fight_enemies(bc::champion& me) {
             mark("dash-away");
             return true;
         }
-        if (step_away(me, threats)) return true;
+        if (kCrystalEscape && in_danger && hp_ > threat * 3.5f && crystal_escape(me, threats)) {
+            mark("crystal");
+            return true;
+        }
+        if (step_away(me, threats, kGrassRetreat)) return true;
         if (target && cheb(target->pos, pos_) <= range_) {
             attack_target(me, target->handle, target->pos, target->hp);
             return true;
@@ -2083,7 +2264,8 @@ bool Bot::fight_enemies(bc::champion& me) {
             if (!harmless_on_spawn(e) && cheb(e.pos, pos_) <= e.range + 1) farming = false;
     }
     if (farming && !(target && cheb(target->pos, pos_) <= range_)) return false;
-    if (kJoinFights && !retreating && !in_danger && !bag && !(kRefineFight && target)) {
+    const bool fit = kEngageFloor <= 0 || hp_ >= max_hp_ * kEngageFloor;
+    if (kJoinFights && fit && !retreating && !in_danger && !bag && !(kRefineFight && target)) {
         // A teammate is in a fight: hit the enemy on it rather than keep farming or wait for an
         // enemy to walk into range (on 01elk-arena our Vesper Vale hit the elk while three of us died).
         const SeenChamp* help = nullptr;
@@ -2113,7 +2295,7 @@ bool Bot::fight_enemies(bc::champion& me) {
         hold_turns_ = 0;
         return true;
     }
-    if (kStandAndFight && !losing && !outnumbered) {
+    if (kStandAndFight && fit && !losing && !outnumbered) {
         // Engage rather than keep farming while an enemy walks up and picks the moment.
         const SeenChamp* goal = nullptr;
         for (const auto& e : enemies_) {
@@ -2138,6 +2320,22 @@ bool Bot::fight_enemies(bc::champion& me) {
             if (ranged_ && !busy && !low && hold_turns_ < kMaxHold && !under_fire && !chase_bag) {
                 ++hold_turns_;
                 mark("hold");
+                if (kBushHold && !world().bushes.get(pos_) && can_move_ && !moved_) {
+                    // Wait in the grass beside us if that is no closer to anyone's reach.
+                    auto exposure = [&](vec2 p) {
+                        int worst = 1000;
+                        for (const auto& e : enemies_)
+                            if (!harmless_on_spawn(e)) worst = std::min(worst, cheb(p, e.pos) - e.reach);
+                        return worst;
+                    };
+                    load_occupancy();
+                    const int here = exposure(pos_);
+                    for (auto d : kDirs) {
+                        const vec2 n = pos_ + d;
+                        if (!free_tile(n) || !world().bushes.get(n) || exposure(n) < here) continue;
+                        if (try_move(me, d)) break;
+                    }
+                }
                 return true;
             }
             hold_turns_ = 0;
@@ -2464,12 +2662,18 @@ bool Bot::try_heal(bc::champion& me) {
         auto& s = spells_[i];
         if (s.kind != bc::ability_kind::heal) continue;
         const SeenChamp* best = nullptr;
-        float best_missing = focus_ * s.modifier * 0.6f;
+        const float worth = focus_ * s.modifier * 0.6f;
+        float best_missing = worth;
         for (const auto& a : allies_seen_) {
             const float missing = a.max_hp - a.hp;
-            if (cheb(a.pos, pos_) <= static_cast<int>(s.range) && missing > best_missing) {
+            if (cheb(a.pos, pos_) > static_cast<int>(s.range) || missing <= worth) continue;
+            float score = missing;
+            if (kHealFocus)
+                for (int k = 0; k < slots_ && k < kMaxSlots; ++k)
+                    if (allies_[k] == a.handle) score += 2.f * ally_drop_[k];
+            if (score > best_missing) {
                 best = &a;
-                best_missing = missing;
+                best_missing = score;
             }
         }
         if (best && spell_ready(i) && cast_on(s, best->handle)) return true;
@@ -2493,7 +2697,7 @@ void Bot::use_combat_spells(bc::champion& me, const SeenCamp* camp, const SeenCh
             const bool stun_only = s.kind == bc::ability_kind::cc && s.modifier <= 0;
             if (enemy && s.kind == bc::ability_kind::cc && !stun_turn() && cheb(enemy->pos, pos_) <= static_cast<int>(s.range)) break;
             if (enemy && cheb(enemy->pos, pos_) <= static_cast<int>(s.range)) {
-                if (kStunDiscipline && s.kind == bc::ability_kind::cc && stun_wasted(*enemy)) {
+                if ((kStunDiscipline || kStunBuffs) && s.kind == bc::ability_kind::cc && stun_wasted(*enemy)) {
                     // Another enemy in range takes it; a pure stun otherwise waits.
                     const SeenChamp* other = nullptr;
                     for (const auto& e : enemies_)
@@ -2554,14 +2758,15 @@ bool Bot::try_move(bc::champion& me, vec2 delta) {
     return false;
 }
 
-bool Bot::step_away(bc::champion& me, const std::vector<std::pair<vec2, int>>& threats) {
+bool Bot::step_away(bc::champion& me, const std::vector<std::pair<vec2, int>>& threats, bool grass) {
     if (!can_move_ || moved_) return false;
     load_occupancy();
     auto& W = world();
     auto margin = [&](vec2 p) {
         int worst = 1000;
         for (const auto& [t, r] : threats) worst = std::min(worst, cheb(p, t) - r);
-        return worst;
+        // Enemies outside a grass patch cannot see in: as good as a tile further away.
+        return grass && W.bushes.get(p) ? worst + 1 : worst;
     };
     const auto* home = W.field(W.spawn_poi, 20000);
     int best = margin(pos_);
@@ -2798,6 +3003,174 @@ void Bot::drop_ward(bc::champion& me) {
     }
 }
 
+void Bot::reveal_ward(bc::champion& me) {
+    // Drop the ward where it sees the most grass we cannot see into now.
+    if (round_ < ward_ready_round_) return;
+    auto& W = world();
+    load_occupancy();
+    // Hidden grass around us (what an attacker could stand in), then the ward tile seeing most of it.
+    std::vector<vec2> hidden;
+    for (int dy = -5; dy <= 5; ++dy)
+        for (int dx = -5; dx <= 5; ++dx) {
+            const vec2 p{pos_.x + dx, pos_.y + dy};
+            if (W.in_bounds(p) && W.bushes.get(p) && !visible_.get(p)) hidden.push_back(p);
+        }
+    if (hidden.empty()) {
+        ward_ready_round_ = round_ + 1;  // nothing to look at here
+        return;
+    }
+    vec2 best{-1, -1};
+    int best_score = 0;
+    for (int dy = -2; dy <= 2; ++dy)
+        for (int dx = -2; dx <= 2; ++dx) {
+            const vec2 n{pos_.x + dx, pos_.y + dy};
+            if (!free_tile(n)) continue;
+            int score = 0;
+            for (auto p : hidden)
+                if (cheb(p, n) <= 3) ++score;
+            if (score > best_score) {
+                best_score = score;
+                best = n;
+            }
+        }
+    if (best.x < 0) return;
+    bool placed = false;
+    try {
+        placed = me.place_ward(best);
+    } catch (const std::exception&) {
+    }
+    if (placed) {
+        ward_ready_round_ = round_ + bc::constants::ward_cooldown + 1;
+        ward_pos_ = best;
+        mark("reveal-ward");
+    } else {
+        ward_ready_round_ = round_ + 3;
+    }
+}
+
+float Bot::dps_now(const bc::champion& c, bc::champion_type t, float strength, float focus) const {
+    // Damage per round over the next kReadyHorizon turns: basic attacks every turn, plus each spell
+    // that is ready within the horizon once.
+    static std::array<int, 13> splash{};
+    auto& sp = splash[static_cast<int>(t)];
+    if (sp == 0) sp = bc::champion{t}.passive() == bc::passive_type::splash_attack ? 2 : 1;
+    float d = strength * (sp == 2 ? 1.5f : 1.f);
+    const float h = static_cast<float>(kReadyHorizon);
+    try {
+        for (const auto& ab : c.abilities()) {
+            const auto& info = ab.info();
+            if (!info) continue;
+            if (ab.cooldown() >= kReadyHorizon) continue;
+            std::visit([&](const auto& p) {
+                using T = std::decay_t<decltype(p)>;
+                if constexpr (std::is_same_v<T, bc::ability_attack_reset>) d += strength / h;
+                else if constexpr (std::is_same_v<T, bc::ability_damage> || std::is_same_v<T, bc::ability_cc>) d += focus * p.modifier / h;
+                else if constexpr (std::is_same_v<T, bc::ability_aoe_damage> || std::is_same_v<T, bc::ability_dash>) d += focus * p.modifier * 1.5f / h;
+            }, *info);
+        }
+    } catch (const std::exception&) {
+        return dps_of(t, strength, focus);
+    }
+    return d;
+}
+
+bool Bot::power_play() const {
+    return kPowerPlay && enemy_roster_.size() >= 2 && static_cast<int>(enemy_roster_.size()) - enemies_alive_ >= 2;
+}
+
+int Bot::hidden_grass(vec2 p) const {
+    // Grass within 3 we cannot see into; standing in grass, its patch is in view.
+    const auto& W = world();
+    if (W.bushes.get(p)) return 0;
+    int n = 0;
+    for (int dy = -3; dy <= 3; ++dy)
+        for (int dx = -3; dx <= 3; ++dx) {
+            const vec2 q{p.x + dx, p.y + dy};
+            if (W.in_bounds(q) && W.bushes.get(q) && !visible_.get(q)) ++n;
+        }
+    return n;
+}
+
+bool Bot::safe_wait_step(bc::champion& me, const Group& g, int keep) {
+    if (!can_move_ || moved_ || !enemy_recent(kSafeWaitRecent)) return false;
+    auto& W = world();
+    // Hidden grass within 4 once, then each tile's count within 3 from that list.
+    std::vector<vec2> hidden;
+    for (int dy = -4; dy <= 4; ++dy)
+        for (int dx = -4; dx <= 4; ++dx) {
+            const vec2 q{pos_.x + dx, pos_.y + dy};
+            if (W.in_bounds(q) && W.bushes.get(q) && !visible_.get(q)) hidden.push_back(q);
+        }
+    auto count = [&](vec2 p) {
+        if (W.bushes.get(p)) return 0;
+        int n = 0;
+        for (auto q : hidden)
+            if (cheb(p, q) <= 3) ++n;
+        return n;
+    };
+    const int here = count(pos_);
+    if (here == 0) return false;
+    load_occupancy();
+    vec2 best = pos_;
+    int best_n = here;
+    for (auto d : kDirs) {
+        const vec2 n = pos_ + d;
+        if (!free_tile(n) || W.group_id_at(n) == g.id || hazardous(n, g.id)) continue;
+        int nearest = 1000;
+        for (auto t : g.tiles) nearest = std::min(nearest, cheb(t, n));
+        if (nearest > keep) continue;
+        const int c = count(n);
+        if (c < best_n) {
+            best_n = c;
+            best = n;
+        }
+    }
+    if (best == pos_) return false;
+    mark("safe-wait");
+    return try_move(me, best - pos_);
+}
+
+bool Bot::crystal_escape(bc::champion& me, const std::vector<std::pair<vec2, int>>& threats) {
+    if (!can_act_crystal(me)) return false;
+    auto& W = world();
+    const auto* home = W.field(W.spawn_poi, 20000);
+    if (!home) return false;
+    const int here = W.dist_on(*home, pos_);
+    if (here == kUnreached) return false;
+    load_occupancy();
+    vec2 best{-1, -1};
+    int best_gain = kCrystalSave - 1;
+    for (int dy = -3; dy <= 3; ++dy)
+        for (int dx = -3; dx <= 3; ++dx) {
+            const vec2 t{pos_.x + dx, pos_.y + dy};
+            if (!free_tile(t)) continue;
+            const int there = home->get(t);
+            if (there == kUnreached) continue;
+            int margin = 1000;
+            for (const auto& [p, r] : threats) margin = std::min(margin, cheb(t, p) - r);
+            if (margin < 1) continue;
+            const int gain = here - there;
+            if (gain > best_gain) {
+                best_gain = gain;
+                best = t;
+            }
+        }
+    if (best.x < 0) return false;
+    try {
+        return me.consumables()[bc::consumable_type::tp_crystal].use(best);
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+bool Bot::can_act_crystal(bc::champion& me) const {
+    try {
+        return me.consumables()[bc::consumable_type::tp_crystal].count() > 0;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
 void Bot::scout_ward(bc::champion& me) {
     if (!kScoutWards || round_ < ward_ready_round_ || on_spawn()) return;
     if (cheb(ward_pos_, pos_) <= kScoutWardMove) return;  // our ward already watches this area
@@ -2920,6 +3293,24 @@ bool Bot::go_home(bc::champion& me, bool urgent) {
         if (c.awake && c.strength > 0 && cheb(c.pos, pos_) <= c.range + 1) threatened = true;
     for (const auto& e : enemies_)
         if (cheb(e.pos, pos_) <= 7 && !harmless_on_spawn(e)) threatened = true;
+    if (kHurtFlee && hurt && round_ - last_champ_hurt_round_ <= kFleeMemory) {
+        // Get out of reach of whoever has been hitting us before trying to recall.
+        std::vector<std::pair<vec2, int>> threats;
+        for (int dy = -4; dy <= 4; ++dy)
+            for (int dx = -4; dx <= 4; ++dx) {
+                const vec2 p{pos_.x + dx, pos_.y + dy};
+                if (W.in_bounds(p) && W.bushes.get(p) && !visible_.get(p)) threats.push_back({p, 3});
+            }
+        for (const auto& s : sightings_)
+            if (round_ - s.round <= kFleeMemory + 2 && cheb(s.pos, pos_) <= 8) threats.push_back({s.pos, 4});
+        for (const auto& e : enemies_)
+            if (!harmless_on_spawn(e)) threats.push_back({e.pos, e.range + 1});
+        mark("hurt-flee");
+        if (!threats.empty() && step_away(me, threats, kGrassRetreat)) return true;
+        return travel(me, W.spawn_poi);
+    }
+    // Hit by someone we cannot see (a bush, the edge of our sight): the recall would only be cut.
+    if (kRecallSafe > 0 && round_ - (kRecallSafe == 2 ? last_champ_hurt_round_ : last_hurt_round_) <= kRecallCalm) threatened = true;
     if (!threatened) {
         try {
             me.recall();
@@ -3265,7 +3656,7 @@ float Bot::siege_rounds(const Group& g, float team_dps, float team_hp, bool unlo
     const float damage = forecast(g, team_dps).damage;
     if (damage <= team_hp * (unlocks ? 0.8f : kSiegeShare)) return 0;
     // A young team besieging a monolith in contested ground loses the early game.
-    if (!unlocks && round_ < kSiegeFrom) return -1;
+    if (!unlocks && round_ < kSiegeFrom && !early_siege_ok_) return -1;
     const float trips = damage / std::max(team_hp * kTripShare, 1.f);
     // With every altar walled in, opening one is the only way to score, however many trips it takes
     // (01boss-battle: the only altar sits behind a 20,000-health monolith; we never started on it
@@ -3301,6 +3692,8 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
     const auto& order = nearest_groups();
     int best = -1;
     float best_score = 0;
+    int early_best = -1;  // kSiegeEarly: best camp needing trips home before kSiegeFrom
+    float early_score = 0;
     struct Look {
         float score, value, rounds;
         int id;
@@ -3335,6 +3728,22 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
             contested_now = true;
         }
         const float extra = siege_rounds(g, team_dps, team_hp, unlocks);
+        if (kSiegeEarly && extra < 0 && g.gems >= 40 && !choosing_small_ && round_ < kSiegeFrom && g.alive_by(round_ + d + respawn_wait)) {
+            // A camp needing trips home, before sieges are allowed: kept aside, taken only when
+            // it beats everything else by kSiegeEarlyEdge.
+            early_siege_ok_ = true;
+            const float extra2 = siege_rounds(g, team_dps, team_hp, unlocks);
+            early_siege_ok_ = false;
+            if (extra2 >= 0) {
+                const float fixed2 = forecast(g, team_dps).rounds + kCaptureRounds + heal_rounds(g, team_dps, team_hp);
+                const int wait2 = g.state == GroupState::respawning ? std::max(0, g.respawn_round - (round_ + d)) : 0;
+                const float score2 = g.value(kGoldWeight) / (d + wait2 + fixed2 + extra2) * squad_mods(g, contested_now);
+                if (score2 > early_score) {
+                    early_score = score2;
+                    early_best = g.id;
+                }
+            }
+        }
         if (extra < 0 || (choosing_small_ && extra > 0)) continue;
         if (!g.alive_by(round_ + d + respawn_wait)) continue;
         const float fixed = forecast(g, team_dps).rounds + kCaptureRounds + heal_rounds(g, team_dps, team_hp);
@@ -3416,6 +3825,7 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
             }
         }
     }
+    if (kSiegeEarly && early_best >= 0 && early_score > kSiegeEarlyEdge * best_score) return early_best;
     if (best >= 0) return best;
     // Nothing dangerous is worth it (clusters only, or every camp respawning): the squad
     // farms clusters together rather than scattering, which leaves lone champions for
@@ -3517,9 +3927,11 @@ void Bot::choose_task(bc::champion& me) {
         team_power(living_dps, living_hp, living, true, split ? 0 : -1);
         const bool unlocks = blocks_altar(g) && !any_altar_open();
         const bool walled = dist_to_group(g) == kUnreached && g.unreachable;
+        early_siege_ok_ = kSiegeEarly;  // a siege chosen early is not stale for being early
         const bool stale = walled || g.state == GroupState::reward ||
                            (g.state == GroupState::respawning && g.respawn_round > round_ + 25) ||
                            siege_rounds(g, living_dps, living_hp * 1.25f, unlocks) < 0;
+        early_siege_ok_ = false;
         // We could not reach it lately (farm() set the avoid timer): pick another.
         const bool blocked_for_me = round_ < avoid_until_[squad & 63];
         // We died beside it lately: teammates cannot know, so move the whole squad on rather
@@ -3698,6 +4110,7 @@ bool Bot::farm(bc::champion& me) {
                     break;
                 }
         }
+        if (kSafeWait) safe_wait_step(me, g, standoff + 1);
         return true;
     }
     if (g.state == GroupState::respawning && nearest <= 3) {
@@ -3709,6 +4122,7 @@ bool Bot::farm(bc::champion& me) {
             for (auto t : g.tiles) tiles.push_back({t, 0});
             step_away(me, tiles);
         }
+        if (kSafeWait) safe_wait_step(me, g, 3);
         return true;
     }
     // A target we have been unable to walk towards for a long time is out of reach for
@@ -3753,16 +4167,31 @@ bool Bot::farm(bc::champion& me) {
 bool Bot::rally_hold(Group& g) {
     // Walking in to a contested jackpot: wait for company rather than arrive alone.
     auto& W = world();
-    const int d = g.id == W.jackpot ? dist_to_group(g) : kUnreached;
+    const bool any = kRallyAll > 0 && !power_play();
+    const bool jackpot = g.id == W.jackpot;
+    const int d = jackpot || any ? dist_to_group(g) : kUnreached;
     if (d == kUnreached || d > kRallyDist + 2 || d < kRallyDist - 3) {
         rally_since_ = -1;
         return false;
     }
     bool contested = false;
+    int most = 0;  // enemies seen there at once
     for (const auto& s : sightings_)
-        if (s.count > 0 && round_ - s.round <= 60 && cheb(s.pos, g.anchor) <= 12) contested = true;
+        if (s.count > 0 && round_ - s.round <= 60 && cheb(s.pos, g.anchor) <= 12) {
+            contested = true;
+            most = std::max(most, s.count);
+        }
+    int now = 0;
     for (const auto& e : enemies_)
-        if (cheb(e.pos, g.anchor) <= 12) contested = true;
+        if (!harmless_on_spawn(e) && cheb(e.pos, g.anchor) <= 12) {
+            contested = true;
+            ++now;
+        }
+    most = std::max(most, now);
+    if (any && !contested && recent_team_deaths(100) >= 2 && (g.contested || g.side == 1)) {
+        contested = true;  // we keep dying out there: assume a group
+        most = std::max(most, 3);
+    }
     int with = 0, living = 0;
     for (const auto& a : allies_seen_)
         if (cheb(a.pos, pos_) <= 6 || cheb(a.pos, g.anchor) <= kRallyDist) ++with;
@@ -3770,12 +4199,26 @@ bool Bot::rally_hold(Group& g) {
         const auto st = comms_.slot(i);
         if (i != slot_ && !(st.task == Task::other && st.target == kDead)) ++living;
     }
-    if (!contested || with >= std::min(2, living)) {
+    int needed = any ? std::min(std::max(most - 1, jackpot ? 2 : 1), living) : std::min(2, living);
+    if (kRallyAll == 2 && !jackpot) {
+        // Only a pack is worth waiting for, and only for teammates actually on their way here.
+        int heading = 0;
+        for (int i = 0; i < slots_; ++i) {
+            if (i == slot_) continue;
+            const auto st = comms_.slot(i);
+            if (st.task == Task::farm && st.target == g.id) ++heading;
+        }
+        const int coming = heading - with;
+        if (most < 3 || coming <= 0) contested = false;
+        needed = std::min(needed, with + std::max(coming, 0));
+    }
+    if (!contested || with >= needed) {
         rally_since_ = -1;
         return false;
     }
     if (rally_since_ < 0) rally_since_ = round_;
-    return round_ - rally_since_ <= kRallyMax;
+    const int limit = !any ? kRallyMax : kRallyAll == 2 && !jackpot ? kRallyPackMax : kRallyAllMax;
+    return round_ - rally_since_ <= limit;
 }
 
 float Bot::squad_mods(Group& g, bool contested_now) {
@@ -3786,6 +4229,7 @@ float Bot::squad_mods(Group& g, bool contested_now) {
     if (enemy_side(g)) m *= enemy_side_factor(false);
     if (contested_now) m *= g.harmless ? kOpeningClusters : kOpeningContested;
     if (kHoldMiddle && held_altar_near(g.anchor)) m *= kHoldBonus;
+    if (power_play() && (g.contested || g.side == 1)) m *= kPowerPlayBonus;
     if (kJackpotPush && g.id == W.jackpot) m *= kJackpotBonus;
     if (kAltarZoneBias > 0) m *= altar_zone(g);
     if (kFieldCamp && in_field(g.anchor)) m *= kFieldBonus;
@@ -3840,6 +4284,15 @@ void Bot::shop(bc::champion& me, bool consumables) {
         } catch (const std::exception&) {
         }
         has_lock_ = me.consumables()[bc::consumable_type::altar_lock].count() > 0;
+    }
+    if (kCrystalEscape && consumables && gold_ >= 60) {
+        try {
+            if (me.consumables()[bc::consumable_type::tp_crystal].count() == 0) {
+                me.buy(bc::consumable_type::tp_crystal);
+                gold_ -= 10;
+            }
+        } catch (const std::exception&) {
+        }
     }
     const auto& build = build_for(type_);
     while (gold_ >= 30 && build_step_ < build.size()) {
