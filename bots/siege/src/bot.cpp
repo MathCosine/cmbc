@@ -325,6 +325,40 @@ constexpr bool kTogether = true;
 constexpr int kTogetherRounds = 150;
 constexpr bool kHelpBlind = true;
 constexpr int kBlindHelpRange = 30;
+// v34 ladder, 00rushbait-v2 against Sololight (lost 482-1,046 with 8 deaths to 6): a line of holes
+// splits the map and both teams farm their own bank. Sight and shots cross it, feet do not. We cleared
+// 4 camps to their 26 in 500 rounds while dealing more champion damage than they did: debug games
+// there had 62 of 63 (and 88 of 88) turns with an enemy within 7 tiles where that enemy was across the
+// holes, and the fight code engaged, held for and chased them by straight-line distance.
+// kReachFights: enemies within 7 more than kReachSlack tiles further on foot than in a straight line
+// are not walked toward, waited for or joined; with none reachable and none able to hit us, farm on.
+// kChaseGiveUp: kChaseTurns turns in a fight without landing a hit or being hit (they kite or stay
+// across) and enemies that cannot hit us are ignored for kChaseIgnore rounds.
+// kCalmSplit: the v34 "together" rule only once enemy champions have hit us in the last
+// kCalmSplitMemory rounds or one of us died lately; otherwise champions spread over our camps again.
+// Out of 140 on top of v34 (Cassi & Issac / fishsim / hunter 120/105/125; 00rushbait-v2 3 of 6):
+// reach 66 against v34, 119/110/125, 00rushbait-v2 6 of 6 with camp clears by round 500 23-30, 20-23
+// and 18-12 (v34 18-31, 22-26, 14-20); chase 67, 119/108/121; calm split 67, 121/105/126 (no change
+// on 00rushbait-v2); all three 68, 127/103/119. On top of v34 + reach: payoff 74 against it,
+// 121/105/127; mirror farm 65, 123/110/125, camps cleared by round 500 with no opponent 26.2 against
+// 22.6; both 68, 122/102/124. Reach and payoff on (v35 test).
+constexpr bool kReachFights = true;
+constexpr int kReachSlack = 6;
+constexpr bool kChaseGiveUp = false;
+constexpr int kChaseTurns = 6;
+constexpr int kChaseIgnore = 20;
+constexpr bool kCalmSplit = false;
+constexpr int kCalmSplitMemory = 80;
+// kPayoff: walk into a fight (engage, a ranged hold, joining a teammate's fight) only for a reason:
+// we outnumber them, the team here kills the target within kPayoffRounds rounds, it is stunned or
+// carries 20+ gems, or it is within 6 tiles of the camp we are farming or capturing. Hits on enemies
+// already in reach stay. kMirrorFarm: no enemy champion has hit us in kMirrorCalm rounds and none of
+// us died in 150: all but one champion may take solo jobs (a third otherwise), so we farm as wide as
+// a team that is farming its own side.
+constexpr bool kPayoff = true;
+constexpr float kPayoffRounds = 3.f;
+constexpr bool kMirrorFarm = false;
+constexpr int kMirrorCalm = 60;
 constexpr float kSiegeEarlyEdge = 2.f;
 // Out of 140 on top of v30 (v30 build 70/124/105/123; this code with all four off 68/124/108/123):
 // floor 0.4 62/128/105/124 (deaths against fish 6.0/8.7, was 6.9/9.7); ward + flee 67/127/103/119;
@@ -1773,7 +1807,7 @@ void Bot::play_turn() {
                     ally_seen_round_[i] = round_;
                 }
     }
-    if (kRecallSafe == 2 || kUnseenWard || kHurtFlee) {
+    if (kRecallSafe == 2 || kUnseenWard || kHurtFlee || kChaseGiveUp || kCalmSplit || kMirrorFarm) {
         const float from_champs = damage_taken_ - incoming_camp_damage(pos_);
         unseen_hit_ = false;
         if (from_champs > 1.f) {
@@ -1855,6 +1889,16 @@ void Bot::act(bc::champion& me) {
 
     mark("enemies");
     if (fight_enemies(me)) {
+        if (kChaseGiveUp) {
+            // Turns in a fight with nothing landing either way: they are kiting or out of reach.
+            const bool hit = attacked_round_ == round_;
+            const bool hurt = round_ - last_champ_hurt_round_ <= 1;
+            fruitless_ = hit || hurt ? 0 : fruitless_ + 1;
+            if (fruitless_ >= kChaseTurns) {
+                chase_ignore_until_ = round_ + kChaseIgnore;
+                fruitless_ = 0;
+            }
+        }
         // Tell the team (retreats already said "home").
         if (kCallHelp && !capturing_here() && !(comms_.slot(slot_).task == Task::other && comms_.slot(slot_).target == kHome))
             set_status(Task::other, bag_fight_ ? kBagFight : kFight);
@@ -2109,6 +2153,29 @@ bool Bot::fight_enemies(bc::champion& me) {
         burst *= k;
     }
     if (!nearest) return false;
+    if (kReachFights || kChaseGiveUp) {
+        bool can_hit = false;  // anything here able to hurt us on its next turn
+        for (const auto& e : enemies_)
+            if (!harmless_on_spawn(e) && cheb(e.pos, pos_) <= std::max(e.reach, e.range + 1)) can_hit = true;
+        if (kChaseGiveUp && round_ < chase_ignore_until_ && !can_hit && !capturing_here() && gems_ < kBagCautionGems) {
+            hold_turns_ = 0;
+            return false;
+        }
+        if (kReachFights) {
+            bool any_reachable = false;
+            for (auto& e : enemies_) {
+                if (harmless_on_spawn(e) || cheb(e.pos, pos_) > 7) continue;
+                const int d = cheb(e.pos, pos_);
+                const int walk = d <= 1 ? d : dist_from_me(e.pos);
+                e.across = walk == kUnreached || walk > d + kReachSlack;
+                if (!e.across) any_reachable = true;
+            }
+            if (!any_reachable && !can_hit) {
+                hold_turns_ = 0;
+                return false;
+            }
+        }
+    }
     if (kInterceptTribute && intercept_tribute(me)) return true;
     if (nearest_d > (kBurstModel ? 10 : 7)) return kEarlyWarning && nearest_d <= 10 && early_warning(me);
     // Cassi and Issac are one pick and one life in two bodies: with kFairHeads they count half each.
@@ -2301,13 +2368,23 @@ bool Bot::fight_enemies(bc::champion& me) {
     }
     if (farming && !(target && cheb(target->pos, pos_) <= range_)) return false;
     const bool fit = kEngageFloor <= 0 || hp_ >= max_hp_ * kEngageFloor;
+    auto payoff = [&](const SeenChamp& e) {
+        if (!kPayoff) return true;
+        if (our_heads > their_heads) return true;
+        if (e.hp <= ally_dps * kPayoffRounds) return true;
+        if (e.stunned > 0 || e.gems >= 20) return true;
+        if (target_ >= 0 && (task_ == Task::farm || task_ == Task::solo || task_ == Task::capture) &&
+            cheb(e.pos, world().groups[target_].anchor) <= 6)
+            return true;
+        return false;
+    };
     if (kJoinFights && fit && !retreating && !in_danger && !bag && !(kRefineFight && target)) {
         // A teammate is in a fight: hit the enemy on it rather than keep farming or wait for an
         // enemy to walk into range (on 01elk-arena our Vesper Vale hit the elk while three of us died).
         const SeenChamp* help = nullptr;
         int help_d = 1000;
         for (const auto& e : enemies_) {
-            if (!huntable(e) || cheb(e.pos, pos_) > 7) continue;
+            if (!huntable(e) || cheb(e.pos, pos_) > 7 || (kReachFights && e.across) || !payoff(e)) continue;
             bool on_ally = false;
             for (const auto& a : allies_seen_)
                 if (cheb(a.pos, e.pos) <= std::max(2, e.range)) on_ally = true;
@@ -2339,6 +2416,8 @@ bool Bot::fight_enemies(bc::champion& me) {
             const bool bag_near_altar = kAltarDefense && cheb(e.pos, pos_) <= 7 &&
                                         (kWorthBag ? worth_bag(e) : e.gems >= 20 && near_contested_altar(e.pos));
             if (!huntable(e) || (cheb(e.pos, pos_) > (kEngageFar ? 7 : kEngageRange) && !bag_near_altar)) continue;
+            if (kReachFights && e.across) continue;  // across holes or walls: not worth walking at
+            if (!payoff(e)) continue;
             const bool focused = slots_ <= 5 && enemy_id(e) == comms_.focus();
             const bool better = goal && better_target(e, *goal);
             if (!goal || focused || (better && !(slots_ <= 5 && enemy_id(*goal) == comms_.focus()))) goal = &e;
@@ -2603,6 +2682,7 @@ bool Bot::attack_target(bc::champion& me, const bc::unit& target, vec2 target_po
     }
     can_attack_ = false;
     if (ranged_) can_move_ = false;
+    attacked_round_ = round_;
     // An attack reset buys a second hit this turn.
     if (cast_done_ || !can_cast_) return true;
     for (int i = 0; i < static_cast<int>(spells_.size()); ++i) {
@@ -4006,8 +4086,10 @@ void Bot::choose_task(bc::champion& me) {
             if (cheb(a.pos, W.groups[squad].anchor) <= 4) ++there;
         straggler = there >= 2;
     }
-    const bool together = kTogether && slots_ >= 4 && (round_ < kTogetherRounds || pressured());
-    const int solo_cap = together ? 0 : kClusterSolos ? std::max(1, active - 2) : std::max(1, early ? active / 2 : active / 3);
+    const bool calm_farm = kMirrorFarm && round_ - last_champ_hurt_round_ > kMirrorCalm && recent_team_deaths(150) == 0;
+    const bool together = !calm_farm && kTogether && slots_ >= 4 && (round_ < kTogetherRounds || pressured()) &&
+                          (!kCalmSplit || round_ - last_champ_hurt_round_ <= kCalmSplitMemory || recent_team_deaths(150) >= 1);
+    const int solo_cap = together ? 0 : calm_farm ? std::max(1, active - 1) : kClusterSolos ? std::max(1, active - 2) : std::max(1, early ? active / 2 : active / 3);
     const bool may_solo = waiting || (straggler && !together) || solos < solo_cap || squad < 0;
     const float my_dps = dps_of(type_, strength_, focus_);
     const auto& order = nearest_groups();

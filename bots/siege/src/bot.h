@@ -32,6 +32,7 @@ struct SeenChamp {
     float shield = 0;    // shield value (kShieldHp)
     bool disarmed = false;  // every damage and stun spell on a long cooldown (kPunish)
     float basic = 0;     // basic attack damage per round (kPunish)
+    bool across = false;  // more than kReachSlack further on foot than in a straight line (kReachFights)
     int reach = 1;    // tiles from which that burst can land next turn (walks, spells, dashes)
     bc::champion_type type{};
 };
@@ -292,6 +293,9 @@ private:
     std::array<float, kMaxSlots> ally_last_hp_{};
     std::array<int, kMaxSlots> ally_seen_round_{};
     bool early_siege_ok_ = false;  // kSiegeEarly: siege_rounds ignores kSiegeFrom
+    int attacked_round_ = -1000;      // last round we landed a basic attack
+    int fruitless_ = 0;               // kChaseGiveUp: fight turns in a row with no hit either way
+    int chase_ignore_until_ = -1000;
     float dps_now(const bc::champion& c, bc::champion_type t, float strength, float focus) const;
     int capture_fail_ = 0;         // turns in a row we could not step toward our capture
     int capture_since_ = -1;       // round this capture claim started
