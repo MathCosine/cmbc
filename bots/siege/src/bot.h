@@ -28,6 +28,10 @@ struct SeenChamp {
     int gems;
     float burst = 0;  // damage it can deal in one turn: basic attack(s) plus its biggest spell
     float now = 0;    // damage per round over the next few turns from live cooldowns (kReadyFights)
+    int stunned = 0;     // remaining stun (kStunBuffs, kFocusStunned)
+    float shield = 0;    // shield value (kShieldHp)
+    bool disarmed = false;  // every damage and stun spell on a long cooldown (kPunish)
+    float basic = 0;     // basic attack damage per round (kPunish)
     int reach = 1;    // tiles from which that burst can land next turn (walks, spells, dashes)
     bc::champion_type type{};
 };
@@ -118,7 +122,7 @@ private:
     bool travel(bc::champion& me, int poi);
     bool approach(bc::champion& me, bc::bitboard goal);
     bool approach_unit(bc::champion& me, vec2 target, int range);
-    bool step_away(bc::champion& me, const std::vector<std::pair<vec2, int>>& threats);
+    bool step_away(bc::champion& me, const std::vector<std::pair<vec2, int>>& threats, bool grass = false);
     bool try_move(bc::champion& me, vec2 delta);
     bool try_dash_along(bc::champion& me, const bc::distance_field& field, bool walkable_roots);
     bool make_way(bc::champion& me, vec2 blocked);
@@ -274,6 +278,17 @@ private:
     int last_champ_hurt_round_ = -1000;  // last round we lost more than nearby camps deal (kRecallSafe 2)
     bool unseen_hit_ = false;            // hit this round by a champion none in sight could reach us from
     void reveal_ward(bc::champion& me);
+    bool power_play() const;
+    int hidden_grass(vec2 p) const;
+    bool safe_wait_step(bc::champion& me, const Group& g, int keep);
+    bool crystal_escape(bc::champion& me, const std::vector<std::pair<vec2, int>>& threats);
+    bool can_act_crystal(bc::champion& me) const;
+    std::vector<bc::champion> enemy_roster_;  // kPowerPlay
+    int enemies_alive_ = 0;
+    std::array<float, kMaxSlots> ally_drop_{};       // kHealFocus: health lost since last turn
+    std::array<float, kMaxSlots> ally_last_hp_{};
+    std::array<int, kMaxSlots> ally_seen_round_{};
+    bool early_siege_ok_ = false;  // kSiegeEarly: siege_rounds ignores kSiegeFrom
     float dps_now(const bc::champion& c, bc::champion_type t, float strength, float focus) const;
     int capture_fail_ = 0;         // turns in a row we could not step toward our capture
     int capture_since_ = -1;       // round this capture claim started
