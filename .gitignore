@@ -4,3 +4,4 @@ matches/
 replays/
 bots/*/build/
 bots/*/target/
+bots/*/compile_commands.json
