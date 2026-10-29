@@ -1,0 +1,1 @@
+Two people and two Claudes work on this repo. Read `READ-CLAUDE-COWORK-AGENT.md` first: it covers current status, the rules between us (merge rather than rebase or force-push on `claude/jolly-volta-m3pwqp`, and who submits to the ladder), the test tools and their gotchas, and the handoff log. Add a log entry there when you finish a piece of work.
