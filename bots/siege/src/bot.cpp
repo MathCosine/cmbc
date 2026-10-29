@@ -892,7 +892,13 @@ constexpr int kControlCarry = 7;
 // were seen within 10 of the altar in the last kGatherRecent rounds waits at a gather point
 // kGatherDist tiles from the altar on the way home until kGatherNeed of us (or every living
 // teammate) are there, for up to kGatherWait rounds; then the group goes in (no new wait for
-// kGatherGo rounds).
+// kGatherGo rounds). A group counts at the gather point or wherever we stand together, and it goes in
+// once it outnumbers the most enemies seen near the altar lately (the first version counted only the
+// gather point: on the v40 ladder test two of ours together in the zone walked back to regroup
+// from a 2-on-1). First version, out of 140 against v40 / meta / hunter / fishsim (v40 -/109/127/99):
+// with kAltarControl 1 62/103/125/97, alone 66/105/125/95. Fixed, with kAltarControl 1, on
+// 00breadcrumbs as Team B: won 1,024-385 against meta (v40 lost 425-1,004), 9 deaths to 27, and
+// 1,000-406 against fishsim. Off; ladder test in siege-v40-gather-test2.zip.
 constexpr bool kAltarGather = false;
 constexpr int kGatherDist = 10;
 constexpr int kGatherNeed = 3;
@@ -1495,12 +1501,21 @@ bool Bot::gather_hold(bc::champion& me) {
         gather_since_ = -1;
         return false;
     }
-    // Held by them: enemies seen near the altar lately (a teammate's call says so too).
+    // Held by them: enemies seen near the altar lately (a teammate's call says so too). `there` is
+    // the most of them seen there at once, lately or now.
     bool hot = called;
+    int there = 0, now = 0;
     for (const auto& s : sightings_)
-        if (s.count > 0 && round_ - s.round <= kGatherRecent && cheb(s.pos, altar) <= 10) hot = true;
+        if (s.count > 0 && round_ - s.round <= kGatherRecent && cheb(s.pos, altar) <= 10) {
+            hot = true;
+            there = std::max(there, s.count);
+        }
     for (const auto& e : enemies_)
-        if (!harmless_on_spawn(e) && cheb(e.pos, altar) <= 10) hot = true;
+        if (!harmless_on_spawn(e) && cheb(e.pos, altar) <= 10) {
+            hot = true;
+            ++now;
+        }
+    there = std::max(there, now);
     if (!hot) {
         gather_since_ = -1;
         return false;
@@ -1509,10 +1524,15 @@ bool Bot::gather_hold(bc::champion& me) {
     for (int i = 0; i < slots_; ++i)
         if (i != slot_ && !slot_dead_[i]) ++living;
     const int needed = std::min(kGatherNeed, 1 + living);
-    int group = cheb(pos_, gather_point_) <= 4 ? 1 : 0;
-    for (const auto& a : allies_seen_)
-        if (cheb(a.pos, gather_point_) <= 4) ++group;
-    if (group >= needed) {
+    // A group counts at the gather point or wherever we already stand together (two of ours together
+    // in the zone used to walk back 10 tiles to regroup, handing the altar over in a 2-on-1).
+    int at_point = cheb(pos_, gather_point_) <= 4 ? 1 : 0, with_me = 1;
+    for (const auto& a : allies_seen_) {
+        if (cheb(a.pos, gather_point_) <= 4) ++at_point;
+        if (cheb(a.pos, pos_) <= 4) ++with_me;
+    }
+    const int group = std::max(at_point, with_me);
+    if (group >= needed || (there > 0 && group > there)) {
         gather_since_ = -1;
         gather_go_until_ = round_ + kGatherGo;
         return false;
