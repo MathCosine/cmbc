@@ -308,6 +308,23 @@ constexpr bool kSiegeEarly = true;
 constexpr int kRallyAll = 0;
 constexpr int kRallyAllMax = 30;
 constexpr int kRallyPackMax = 15;
+// v33 ladder clips (00contest against VV/HoR/Ryth/Marcella/Tavi): at round 28 three of ours took a
+// gold cluster beside the middle altar while Vesper Vale and Tavi farmed alone at the edges; all
+// five of theirs were in the middle, 3 against 5 then 2 against 4, all five of ours dead by round
+// 98. Later (rounds 540-635) four separate 1v1 and 2v2 fights around the middle, lost one at a time.
+// kTogether: no solo jobs (straggler jobs included) in the first kTogetherRounds rounds with 4+
+// champions, or while under pressure (3+ of us dead in 150 rounds); side jobs while the squad waits
+// for a respawn stay. kHelpBlind: a call for help reached only teammates who could already see the
+// caller (vision is not shared); with a teammate's status saying it is fighting and none in sight,
+// head for the squad's camp when it is within kBlindHelpRange tiles on foot.
+// Out of 140 on top of v33b (head to head against it, then Cassi & Issac / fishsim / hunter, where
+// the same code before the fuel fix had 123/101/120): together 68, 125/103/123, farming 1,122 against
+// 1,137; blind help 69, 120/109/124; both 64, 120/105/125 with the fewest deaths (11.4 a game against
+// hunter, was 12.6). Both on for the v34 ladder test.
+constexpr bool kTogether = true;
+constexpr int kTogetherRounds = 150;
+constexpr bool kHelpBlind = true;
+constexpr int kBlindHelpRange = 30;
 constexpr float kSiegeEarlyEdge = 2.f;
 // Out of 140 on top of v30 (v30 build 70/124/105/123; this code with all four off 68/124/108/123):
 // floor 0.4 62/128/105/124 (deaths against fish 6.0/8.7, was 6.9/9.7); ward + flee 67/127/103/119;
@@ -1368,6 +1385,25 @@ bool Bot::answer_call(bc::champion& me) {
             if (a.handle == allies_[i] && cheb(a.pos, pos_) <= range && cheb(a.pos, pos_) > 2 &&
                 (!caller || cheb(a.pos, pos_) < cheb(caller->pos, pos_)))
                 caller = &a;
+    }
+    if (!caller && kHelpBlind && task_ != Task::capture) {
+        // Out of sight: the status bytes still say someone is fighting; the squad's camp says where.
+        int fighting = 0;
+        for (int i = 0; i < slots_ && i < kMaxSlots; ++i) {
+            if (i == slot_) continue;
+            const auto st = comms_.slot(i);
+            if (st.task == Task::other && (st.target == kFight || st.target == kBagFight)) ++fighting;
+        }
+        const int squad = comms_.squad_target();
+        if (fighting > 0 && squad >= 0 && squad < static_cast<int>(world().groups.size())) {
+            auto& g = world().groups[squad];
+            const int d = dist_to_group(g);
+            if (d != kUnreached && d > 6 && d <= kBlindHelpRange) {
+                mark("answer-blind");
+                set_status(Task::farm, squad);
+                return travel(me, g.poi);
+            }
+        }
     }
     if (!caller) return false;
     // Straight-line distance can be across a wall: a short walk only.
@@ -3970,8 +4006,9 @@ void Bot::choose_task(bc::champion& me) {
             if (cheb(a.pos, W.groups[squad].anchor) <= 4) ++there;
         straggler = there >= 2;
     }
-    const int solo_cap = kClusterSolos ? std::max(1, active - 2) : std::max(1, early ? active / 2 : active / 3);
-    const bool may_solo = waiting || straggler || solos < solo_cap || squad < 0;
+    const bool together = kTogether && slots_ >= 4 && (round_ < kTogetherRounds || pressured());
+    const int solo_cap = together ? 0 : kClusterSolos ? std::max(1, active - 2) : std::max(1, early ? active / 2 : active / 3);
+    const bool may_solo = waiting || (straggler && !together) || solos < solo_cap || squad < 0;
     const float my_dps = dps_of(type_, strength_, focus_);
     const auto& order = nearest_groups();
     int solo = -1;
