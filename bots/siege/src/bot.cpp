@@ -321,6 +321,9 @@ constexpr bool kFocusStunned = true;
 // on the enemy whose damage we most want stopped (its damage per round, times the share of its
 // health two turns of our follow-up deals, capped at 2; the team's focus counts 1.25x), and makes
 // that enemy the team's focus. Retreating champions still stun whoever is closest, as before.
+// Ryth's stun is an area damage spell with a stun duration (only Tavi's is a pure stun); the first
+// version covered Tavi only: out of 140 against v39 / meta / hunter / fishsim (v39 -/104/121/105)
+// 73/102/120/95, needing 3 hitters 66/99/115/95. Now it covers both (retest queued).
 constexpr bool kStunCombo = false;
 constexpr int kComboHitters = 2;
 // kClumpStun: an area stun (Ryth's lands on every enemy within 1 of its target) also counts half the
@@ -337,6 +340,11 @@ constexpr bool kPowerEnd = false;
 // (any hit cancels the channel; their cornered champions recalled as soon as they saw us), and a
 // damage spell on an enemy it kills outright.
 constexpr bool kSnipe = false;
+// kWillowCombo: while the team's focus is stunned within Willow's reach, her one cast a turn goes on
+// the attack reset (a second hit on it) instead of a heal, unless a teammate within 4 is under
+// kWillowUrgent of its health.
+constexpr bool kWillowCombo = false;
+constexpr float kWillowUrgent = 0.4f;
 // kHoleEscape: in danger, a dasher hops over a hole tile to a landing kHoleEscapeWalk+ tiles away
 // on foot (or unreachable on foot), as far from the threats as it can; walkers must go round.
 constexpr bool kHoleEscape = false;
@@ -2269,7 +2277,9 @@ void Bot::fire_spells(bool retreating) {
                 continue;
             }
         }
-        if (kStunCombo && sp.kind == bc::ability_kind::cc && !retreating) {
+        // Ryth's stun is an area damage spell with a stun duration; Tavi's is a pure stun.
+        const bool stunner = sp.kind == bc::ability_kind::cc || (sp.kind == bc::ability_kind::aoe_damage && sp.duration > 0);
+        if (kStunCombo && stunner && !retreating) {
             // Stun the enemy worth most to lock down that teammates can hit while it is held: its
             // damage per round times the share of its health our follow-up deals in two turns.
             const SeenChamp* pick = nullptr;
@@ -3196,6 +3206,19 @@ bool Bot::cast_at(Spell& spell, vec2 tile) {
 
 bool Bot::try_heal(bc::champion& me) {
     (void)me;
+    if (kWillowCombo) {
+        // The team's focus is stunned in our reach: the cast goes on the attack reset (a second
+        // hit) unless a teammate is about to die.
+        bool window = false;
+        for (const auto& e : enemies_)
+            if (e.stunned > 0 && cheb(e.pos, pos_) <= range_ && slots_ <= 5 && enemy_id(e) == comms_.focus()) window = true;
+        if (window) {
+            bool urgent = false;
+            for (const auto& a : allies_seen_)
+                if (cheb(a.pos, pos_) <= 4 && a.hp < a.max_hp * kWillowUrgent) urgent = true;
+            if (!urgent) return false;
+        }
+    }
     for (int i = 0; i < static_cast<int>(spells_.size()); ++i) {
         auto& s = spells_[i];
         if (s.kind != bc::ability_kind::heal) continue;
@@ -3261,6 +3284,8 @@ void Bot::use_combat_spells(bc::champion& me, const SeenCamp* camp, const SeenCh
         }
         case bc::ability_kind::aoe_damage: {
             if (enemy && s.duration > 0 && !stun_turn() && cheb(enemy->pos, pos_) <= static_cast<int>(s.range)) break;
+            if (kStunCombo && enemy && s.duration > 0 && cheb(enemy->pos, pos_) > enemy->range + 1 && combo_hitters(*enemy) < kComboHitters)
+                break;
             if (enemy && cheb(enemy->pos, pos_) <= static_cast<int>(s.range)) {
                 if (spell_ready(i)) cast_on(s, enemy->handle);
             } else if (camp && cheb(camp->pos, pos_) <= static_cast<int>(s.range)) {
