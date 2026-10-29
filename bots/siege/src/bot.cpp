@@ -423,6 +423,19 @@ constexpr float kCalmSoloClear = 10.f;
 // 00rushbait-v2 with no opponent pairs took 1,657 rounds to 1,000 gems against 1,456: its elk camps
 // fall much faster to four. Off.
 constexpr bool kTwoSquadsCalm = false;
+// Gold spread. Locally Marcella earns 48-49% of our team's gold (Willow 9-11%, Ryth 13%): teammates
+// leave her every gem reward she can reach, its gold included, so the others rarely buy items. On
+// the ladder against Mundus our top earner had 59-66% on two maps, theirs 32-47%. (Giving gold-heavy
+// rewards to Vesper Vale instead lost 64/140.) kShareGold: a reward with kShareGoldMin+ gold may have
+// a second capturer (never Marcella), who no longer steps aside for her; rewards split evenly among
+// the allies on the region, so both get half the gems and half the gold.
+// Out of 140 against v37 (111/104/131 against Cassi & Issac / fishsim / hunter, team gold by round
+// 1,000 4,822, Marcella 48%): 60+ gold 55, 111/92/117, team gold 4,580 with Marcella at 36%, farming
+// 1,170 rounds against 1,132; 100+ gold 55, 115/95/119, 4,719 and 39%, 1,162. The team ends poorer
+// (shared gems miss Marcella's 2 gold a gem, and two champions stand on each reward) and fights no
+// better. Off: gold on Marcella pays.
+constexpr bool kShareGold = false;
+constexpr int kShareGoldMin = 60;
 constexpr float kOverkillRounds = 12.f;
 // Fuel the squad pass leaves for the stop-on-the-way check: each camp it looks at costs about 1,000
 // (the walk from the best camp to a camp tile searches the tiles around it). Without it the check
@@ -3688,6 +3701,7 @@ bool Bot::capture(bc::champion& me) {
     // Our Marcella is coming for this gem reward: leave it to her (rewards are split among
     // allies standing on the region) and get on with the next camp.
     if (task_ == Task::capture && target_ >= 0 && W.groups[target_].gems > 0 && banker_slot_ >= 0 &&
+        !(kShareGold && W.groups[target_].gold >= kShareGoldMin) &&
         comms_.slot(banker_slot_).task == Task::capture && comms_.slot(banker_slot_).target == target_ &&
         banker_free_near(W.groups[target_].anchor, kBankerReach, target_)) {
         task_ = Task::farm;
@@ -3704,10 +3718,11 @@ bool Bot::capture(bc::champion& me) {
             const int d = cheb(g.anchor, pos_);
             if (d > (banker && g.gems > 0 ? kBankerClaim : 10) || d >= best_d || g.id > kMaxTarget || round_ < avoid_until_[g.id & 63]) continue;
             // Marcella turns gems into gold: leave gem rewards to her when she is close and free.
-            if (g.gems > 0 && banker_free_near(g.anchor, kBankerReach, g.id)) continue;
+            const bool share_gold = kShareGold && g.gold >= kShareGoldMin && !banker;
+            if (g.gems > 0 && !share_gold && banker_free_near(g.anchor, kBankerReach, g.id)) continue;
             // Rewards are split among allies standing on the region: with small bags, big gem
             // rewards are shared so no single champion walks off with a bag worth dying for.
-            const int sharers = !(kSmallBags || kShareBig) ? 1 : g.gems >= 100 ? 5 : g.gems >= 40 ? 3 : 1;
+            const int sharers = share_gold ? 2 : !(kSmallBags || kShareBig) ? 1 : g.gems >= 100 ? 5 : g.gems >= 40 ? 3 : 1;
             // Close by, Marcella takes a gem reward over (the claimant leaves it to her).
             const bool take_over = banker && g.gems > 0 && d <= kBankerReach;
             if (!take_over && comms_.claims_by_others(slot_, Task::capture, g.id, slots_) >= sharers) continue;
