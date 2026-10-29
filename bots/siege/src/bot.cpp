@@ -295,8 +295,15 @@ constexpr bool kSiegeEarly = true;
 // or on their side, wait about kRallyDist tiles out until the teammates with us (or already there)
 // match the most enemies seen there at once less one, at most kRallyAllMax rounds. Not while they
 // are short-handed (kPowerPlay).
-constexpr bool kRallyAll = false;
+// Out of 140 against v31: everything on 47, without this 66, v31 + this alone 58 (gems 658 to 801):
+// it waited at nearly every contested camp. Mode 2 waits only for a pack (3+ enemies seen there at
+// once, or 2+ of us dead lately) and only while a teammate heading for the same camp is still on
+// its way, at most kRallyPackMax rounds. 0 off, 1 as first written, 2 packs. Mode 2: 58 against v31,
+// 64 against the same build without it, 119/104/118 against Cassi & Issac / fishsim / hunter
+// (without 123/101/120); locally waiting only costs, as no sparring bot moves as a pack.
+constexpr int kRallyAll = 0;
 constexpr int kRallyAllMax = 30;
+constexpr int kRallyPackMax = 15;
 constexpr float kSiegeEarlyEdge = 2.f;
 // Out of 140 on top of v30 (v30 build 70/124/105/123; this code with all four off 68/124/108/123):
 // floor 0.4 62/128/105/124 (deaths against fish 6.0/8.7, was 6.9/9.7); ward + flee 67/127/103/119;
@@ -4142,7 +4149,7 @@ bool Bot::farm(bc::champion& me) {
 bool Bot::rally_hold(Group& g) {
     // Walking in to a contested jackpot: wait for company rather than arrive alone.
     auto& W = world();
-    const bool any = kRallyAll && !power_play();
+    const bool any = kRallyAll > 0 && !power_play();
     const bool jackpot = g.id == W.jackpot;
     const int d = jackpot || any ? dist_to_group(g) : kUnreached;
     if (d == kUnreached || d > kRallyDist + 2 || d < kRallyDist - 3) {
@@ -4174,13 +4181,26 @@ bool Bot::rally_hold(Group& g) {
         const auto st = comms_.slot(i);
         if (i != slot_ && !(st.task == Task::other && st.target == kDead)) ++living;
     }
-    const int needed = any ? std::min(std::max(most - 1, jackpot ? 2 : 1), living) : std::min(2, living);
+    int needed = any ? std::min(std::max(most - 1, jackpot ? 2 : 1), living) : std::min(2, living);
+    if (kRallyAll == 2 && !jackpot) {
+        // Only a pack is worth waiting for, and only for teammates actually on their way here.
+        int heading = 0;
+        for (int i = 0; i < slots_; ++i) {
+            if (i == slot_) continue;
+            const auto st = comms_.slot(i);
+            if (st.task == Task::farm && st.target == g.id) ++heading;
+        }
+        const int coming = heading - with;
+        if (most < 3 || coming <= 0) contested = false;
+        needed = std::min(needed, with + std::max(coming, 0));
+    }
     if (!contested || with >= needed) {
         rally_since_ = -1;
         return false;
     }
     if (rally_since_ < 0) rally_since_ = round_;
-    return round_ - rally_since_ <= (any ? kRallyAllMax : kRallyMax);
+    const int limit = !any ? kRallyMax : kRallyAll == 2 && !jackpot ? kRallyPackMax : kRallyAllMax;
+    return round_ - rally_since_ <= limit;
 }
 
 float Bot::squad_mods(Group& g, bool contested_now) {
