@@ -295,7 +295,7 @@ constexpr bool kSiegeEarly = true;
 // or on their side, wait about kRallyDist tiles out until the teammates with us (or already there)
 // match the most enemies seen there at once less one, at most kRallyAllMax rounds. Not while they
 // are short-handed (kPowerPlay).
-constexpr bool kRallyAll = true;
+constexpr bool kRallyAll = false;
 constexpr int kRallyAllMax = 30;
 constexpr float kSiegeEarlyEdge = 2.f;
 // Out of 140 on top of v30 (v30 build 70/124/105/123; this code with all four off 68/124/108/123):
