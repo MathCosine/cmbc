@@ -80,6 +80,26 @@ constexpr std::uint64_t kActFuel = 50000;    // left after setup to act this tur
 constexpr bool kEscort = true;
 constexpr int kEscortWindow = 120;  // team deaths this recent mean the enemy is winning fights
 constexpr int kEscortWait = 40;     // longest wait on spawn before going anyway
+// v39 ladder clip against inter fish (00stampede, rounds 140-191): our champions met their five one
+// or two at a time (Vesper Vale and Marcella, then Willow and Tavi out of spawn as a pair, then
+// Ryth) and all died; the respawns came out at different times and died the same way (deaths at
+// rounds 152-168, 271-288, 384-427). The escort above lets a champion leave spawn with one
+// teammate. kRegroup: after 2+ team deaths in kEscortWindow, a champion on spawn waits (up to
+// kRegroupWait rounds after respawning) until kRegroupSize of us stand together there, as long as a
+// teammate is still dead or walking home. Our spawn is safe: enemies cannot step onto it.
+// Engine 2.0.0, out of 140 against v39 / meta / hunter / fishsim (v39 -/104/121/105): 64/102/115/91.
+// Off.
+constexpr bool kRegroup = false;
+// kReachDanger: in a fight we are losing or outnumbered in, we retreat once any enemy is within its
+// one-turn reach + 1 (walk, spells and dashes: Heart of Ruin's dash-stun lands from 4 tiles), not
+// only once the nearest is within its basic attack range + 2. Chained stuns (their Heart of Ruin,
+// Cassi, Ryth) kept ours from walking away once they were in range. Engine 2.0.0, out of 140
+// against v39 / meta / hunter / fishsim (v39 -/104/121/105): 73/107/128/97, deaths a game 12.0 /
+// 7.9 / 9.5 / 7.1 (v39 14.6/10.3/10.4/7.7), 71% of the deaths in 4+ death fights against meta
+// theirs (v39 66%); with kRegroup 79/96/124/92.
+constexpr bool kReachDanger = false;
+constexpr int kRegroupSize = 3;
+constexpr int kRegroupWait = 60;
 // Targets near where we died lately, or where 2+ enemies were seen, score lower; a squad
 // target we died beside is dropped, so the whole squad moves on, not just us.
 constexpr bool kDangerMemory = false;
@@ -296,6 +316,31 @@ constexpr int kReadyHorizon = 3;
 //   100+ tiles between 4-gem wolves and 40-gold clusters, and earned 248 gold by round 500).
 constexpr bool kStunBuffs = true;
 constexpr bool kFocusStunned = true;
+// kStunCombo (asked for after the v39 inter fish clip, where their stuns opened every kill): a stun
+// waits until kComboHitters of us (the caster included) can hit the target while it is held, goes
+// on the enemy whose damage we most want stopped (its damage per round, times the share of its
+// health two turns of our follow-up deals, capped at 2; the team's focus counts 1.25x), and makes
+// that enemy the team's focus. Retreating champions still stun whoever is closest, as before.
+constexpr bool kStunCombo = false;
+constexpr int kComboHitters = 2;
+// kClumpStun: an area stun (Ryth's lands on every enemy within 1 of its target) also counts half the
+// damage per round of each other enemy it would hold; their five moved as one pack.
+constexpr bool kClumpStun = false;
+// kSaveReset: an attack reset is not spent on a camp while an enemy champion is within
+// kSaveResetRange, so the double hit is ready when the fight starts.
+constexpr bool kSaveReset = false;
+constexpr int kSaveResetRange = 10;
+// kPowerEnd: strength builds finish on Power emblems (6 strength each) instead of Bruiser (5 strength,
+// 1 health, 1 focus); inter fish built 20-27 Power emblems a game.
+constexpr bool kPowerEnd = false;
+// kSnipe: a damage spell or stun in range goes first on an enemy recalling or channelling a tribute
+// (any hit cancels the channel; their cornered champions recalled as soon as they saw us), and a
+// damage spell on an enemy it kills outright.
+constexpr bool kSnipe = false;
+// kHoleEscape: in danger, a dasher hops over a hole tile to a landing kHoleEscapeWalk+ tiles away
+// on foot (or unreachable on foot), as far from the threats as it can; walkers must go round.
+constexpr bool kHoleEscape = false;
+constexpr int kHoleEscapeWalk = 8;
 constexpr bool kPunish = true;
 constexpr int kPunishTurns = 4;
 constexpr bool kShieldHp = true;
@@ -858,6 +903,19 @@ struct BuildStep {
 // The repeat step is Bruiser: 5 shards of the chosen stat plus 1 of each other, 7 shards'
 // worth for 150 gold where Power gives 6. Emblem passives do not stack, so once the useful
 // passives are bought, raw stats are all that is left to buy.
+// Engine 2.0.0 (the ladder's since about v10; cambc 4.0.0 locally, which we had not been testing
+// on) halved Treasure emblems (20% -> 10% more gold), raised Monster emblems (10% -> 15% more damage
+// to camps) and added seven emblem families: Tribute (passive magnitude 0.33), Capture (3),
+// Prospector (0.25), Hunter (50), Skirmish (0.05), Collectors (0.01) and Greed (25 shards -> 35
+// stats, no passive). Some ladder teams buy Prospector and Capture. The new items are named by
+// number so the code still builds on the old SDK. kNewItems: 1 earners skip Treasure (Monster
+// first); 2 earners buy Prospector instead of Treasure; 3 Capture instead of Treasure; 4 casters
+// (Marcella, Heart of Ruin, Willow) buy Tribute focus shards first. On engine 2.0.0, out of 140
+// against v39 / against meta (v39 104), and rounds to 1,000 gems with no opponent (v39 1,136): mode 1
+// 78 / 103 / 1,131; mode 2 74 / 99 / 1,114; mode 3 72 / 99 / 1,122; mode 4 66 / 106 / 1,141.
+constexpr int kNewItems = 0;
+inline bc::item_type new_item(std::uint32_t id) { return bc::item_type{static_cast<bc::item_type::enum_type>(id)}; }
+
 const std::vector<BuildStep>& build_for(bc::champion_type t) {
     using it = bc::item_type;
     static const std::vector<BuildStep> tank{{it::jungle_shard_of_health, 5},
@@ -894,9 +952,29 @@ const std::vector<BuildStep>& build_for(bc::champion_type t) {
                                                   {it::monster_shard_of_strength, 5},
                                                   {it::jungle_shard_of_health, 5},
                                                   {it::bruiser_shard_of_strength, 1 << 30}};
+    static const std::vector<BuildStep> earner_m{{it::monster_shard_of_strength, 5},
+                                                 {it::jungle_shard_of_health, 5},
+                                                 {it::durability_shard_of_health, 5},
+                                                 {it::bruiser_shard_of_strength, 1 << 30}};
+    static const std::vector<BuildStep> earner_p{{new_item(54), 5},  // prospector shard of strength
+                                                 {it::monster_shard_of_strength, 5},
+                                                 {it::jungle_shard_of_health, 5},
+                                                 {it::durability_shard_of_health, 5},
+                                                 {it::bruiser_shard_of_strength, 1 << 30}};
+    static const std::vector<BuildStep> earner_c{{new_item(48), 5},  // capture shard of strength
+                                                 {it::monster_shard_of_strength, 5},
+                                                 {it::jungle_shard_of_health, 5},
+                                                 {it::durability_shard_of_health, 5},
+                                                 {it::bruiser_shard_of_strength, 1 << 30}};
+    static const std::vector<BuildStep> caster_t{{new_item(44), 5},  // tribute shard of focus
+                                                 {it::durability_shard_of_health, 5},
+                                                 {it::bruiser_shard_of_focus, 1 << 30}};
     // Focus builds: Marcella's spell, Heart of Ruin's dash and shield, Willow's heal.
-    if (t == bc::champion_type::marcella || t == bc::champion_type::heart_of_ruin || t == bc::champion_type::willow) return caster;
+    if (t == bc::champion_type::marcella || t == bc::champion_type::heart_of_ruin || t == bc::champion_type::willow)
+        return kNewItems == 4 ? caster_t : caster;
     if (tank_type(t)) return kFightBuild ? tank_f : tank;
+    if (bc::champion{t}.base_stats().base_attack_range > 1 && !kFightBuild && kNewItems >= 1 && kNewItems <= 3)
+        return kNewItems == 1 ? earner_m : kNewItems == 2 ? earner_p : earner_c;
     return bc::champion{t}.base_stats().base_attack_range > 1 ? (kFightBuild ? earner_f : earner) : (kFightBuild ? fighter_f : fighter);
 }
 
@@ -1765,6 +1843,18 @@ bool Bot::early_warning(bc::champion& me) {
 bool Bot::wait_for_escort() {
     // A champion that respawns and walks back out alone into a team holding our half dies
     // again. Once teammates have been dying, leave spawn with someone.
+    if (kRegroup && on_spawn() && round_ - respawn_round_ <= kRegroupWait && recent_team_deaths(kEscortWindow) >= 2) {
+        int group = 1, coming = 0;
+        for (const auto& a : allies_seen_)
+            if (cheb(a.pos, pos_) <= 4) ++group;
+        for (int i = 0; i < slots_; ++i) {
+            if (i == slot_) continue;
+            const auto st = comms_.slot(i);
+            if (st.task == Task::other && (st.target == kDead || st.target == kHome)) ++coming;
+        }
+        if (coming > 0 && group < std::min(kRegroupSize, slots_)) return true;
+        if (group >= 2) return false;
+    }
     if (!kEscort || !on_spawn()) return false;
     if (round_ - respawn_round_ > kEscortWait) return false;
     if (recent_team_deaths(kEscortWindow) < 2) return false;
@@ -2155,6 +2245,64 @@ void Bot::fire_spells(bool retreating) {
         const SeenChamp* best = nullptr;
         const bool stun = (kStunDiscipline || kStunBuffs) && sp.kind == bc::ability_kind::cc;
         if ((sp.kind == bc::ability_kind::cc || (sp.kind == bc::ability_kind::aoe_damage && sp.duration > 0)) && !stun_turn()) continue;
+        if (kSnipe) {
+            // Any hit cancels a recall or a tribute; a damage spell that kills ends a chase.
+            const SeenChamp* snipe = nullptr;
+            for (const auto& e : enemies_) {
+                if (world().enemy_spawn.get(e.pos) || cheb(e.pos, pos_) > static_cast<int>(sp.range)) continue;
+                bool channel = false;
+                try {
+                    channel = e.handle.is_recalling() || e.handle.is_submitting_gems();
+                } catch (const std::exception&) {
+                }
+                bool kill = false;
+                if (!channel && sp.kind != bc::ability_kind::cc) {
+                    try {
+                        kill = sp.handle.damage_amount(e.handle) >= e.hp + e.shield;
+                    } catch (const std::exception&) {
+                    }
+                }
+                if ((channel || kill) && (!snipe || e.hp < snipe->hp)) snipe = &e;
+            }
+            if (snipe && spell_ready(i) && cast_on(sp, snipe->handle)) {
+                LOG("SNIPE r" << round_ << " " << bc::to_string(type_) << " on " << bc::to_string(snipe->type) << " hp" << snipe->hp);
+                continue;
+            }
+        }
+        if (kStunCombo && sp.kind == bc::ability_kind::cc && !retreating) {
+            // Stun the enemy worth most to lock down that teammates can hit while it is held: its
+            // damage per round times the share of its health our follow-up deals in two turns.
+            const SeenChamp* pick = nullptr;
+            float pick_score = 0;
+            const float my_dps = dps_of(type_, strength_, focus_);
+            const int my_reach = ranged_ ? range_ : range_ + 1;
+            for (const auto& e : enemies_) {
+                if (world().enemy_spawn.get(e.pos) || cheb(e.pos, pos_) > static_cast<int>(sp.range) || stun_wasted(e)) continue;
+                float follow = 0;
+                int hitters = 0;
+                if (cheb(e.pos, pos_) <= my_reach) {
+                    follow += my_dps;
+                    ++hitters;
+                }
+                for (const auto& a : allies_seen_)
+                    if (cheb(a.pos, e.pos) <= (a.range > 1 ? a.range : a.range + 1)) {
+                        follow += a.dps;
+                        ++hitters;
+                    }
+                if (hitters < kComboHitters) continue;
+                float score = e.dps * std::min(2.f, 2.f * follow / std::max(e.hp + e.shield, 1.f));
+                if (kClumpStun && sp.radius >= 1)
+                    for (const auto& x : enemies_)
+                        if (&x != &e && cheb(x.pos, e.pos) <= static_cast<int>(sp.radius) && !stun_wasted(x)) score += 0.5f * x.dps;
+                if (slots_ <= 5 && enemy_id(e) == comms_.focus()) score *= 1.25f;
+                if (score > pick_score) {
+                    pick_score = score;
+                    pick = &e;
+                }
+            }
+            if (pick && spell_ready(i) && cast_on(sp, pick->handle) && slots_ <= 5) comms_.set_focus(enemy_id(*pick));
+            continue;
+        }
         for (const auto& e : enemies_) {
             if (world().enemy_spawn.get(e.pos) || cheb(e.pos, pos_) > static_cast<int>(sp.range)) continue;
             if (stun && stun_wasted(e)) continue;
@@ -2164,6 +2312,49 @@ void Bot::fire_spells(bool retreating) {
         }
         if (best && spell_ready(i)) cast_on(sp, best->handle);
     }
+}
+
+bool Bot::hole_escape(bc::champion& me, const std::vector<std::pair<vec2, int>>& threats) {
+    // Dash over a hole tile to a landing that is far on foot from here: the enemies chasing us
+    // have to walk round unless they can dash too (kHoleEscape).
+    if (cast_done_ || !can_cast_ || !world().any_holes) return false;
+    for (int i = 0; i < static_cast<int>(spells_.size()); ++i) {
+        auto& s = spells_[i];
+        if (s.kind != bc::ability_kind::dash || s.modifier > 0 || !spell_ready(i)) continue;
+        vec2 best = pos_;
+        int best_gap = 0;
+        for (auto d1 : kDirs) {
+            const vec2 m = pos_ + d1;
+            if (!world().in_bounds(m) || !world().holes.get(m)) continue;
+            for (auto d2 : kDirs) {
+                const vec2 n = m + d2;
+                if (n == pos_ || !free_tile(n)) continue;
+                const int walk = dist_from_me(n);
+                if (walk != kUnreached && walk < kHoleEscapeWalk) continue;
+                int gap = 1000;
+                for (const auto& [t, r] : threats) gap = std::min(gap, cheb(t, n) - r);
+                if (gap > best_gap) {
+                    best_gap = gap;
+                    best = n;
+                }
+            }
+        }
+        if (best != pos_ && cast_at(s, best)) {
+            LOG("HOLE-ESCAPE r" << round_ << " " << bc::to_string(type_) << bc::to_string(pos_) << "->" << bc::to_string(best));
+            pos_ = best;
+            return true;
+        }
+    }
+    (void)me;
+    return false;
+}
+
+int Bot::combo_hitters(const SeenChamp& e) const {
+    // Champions of ours (us included) who can hit e next turn without moving more than one step.
+    int n = cheb(e.pos, pos_) <= (ranged_ ? range_ : range_ + 1) ? 1 : 0;
+    for (const auto& a : allies_seen_)
+        if (cheb(a.pos, e.pos) <= (a.range > 1 ? a.range : a.range + 1)) ++n;
+    return n;
 }
 
 bool stun_immune(bc::champion_type t) {
@@ -2482,7 +2673,10 @@ bool Bot::fight_enemies(bc::champion& me) {
     int beside = 0;
     for (const auto& a : allies_seen_)
         if (cheb(a.pos, pos_) <= 3) ++beside;
-    const int danger_range = kBurstModel ? nearest->reach + 1 : nearest->range + 2;
+    int danger_range = kBurstModel ? nearest->reach + 1 : nearest->range + 2;
+    if (kReachDanger && (clearly_losing || outnumbered))
+        for (const auto& e : enemies_)
+            if (!harmless_on_spawn(e) && cheb(e.pos, pos_) <= e.reach + 1) danger_range = std::max(danger_range, cheb(nearest->pos, pos_));
     bool committed, retreating;
     if (kStandAndFight) {
         // One teammate beside us is enough to hold a fight that is not clearly lost.
@@ -2543,6 +2737,10 @@ bool Bot::fight_enemies(bc::champion& me) {
         set_status(Task::other, kHome);
         if (kCombatDash && in_danger && dash_away(me, threats)) {
             mark("dash-away");
+            return true;
+        }
+        if (kHoleEscape && in_danger && hole_escape(me, threats)) {
+            mark("hole-escape");
             return true;
         }
         if (kCrystalEscape && in_danger && hp_ > threat * 3.5f && crystal_escape(me, threats)) {
@@ -2883,7 +3081,12 @@ bool Bot::fight_camps(bc::champion& me) {
     return true;
 }
 
-bool Bot::attack_camp(bc::champion& me, const SeenCamp& camp) { return attack_target(me, camp.handle, camp.pos, camp.hp); }
+bool Bot::attack_camp(bc::champion& me, const SeenCamp& camp) {
+    camp_attack_ = true;
+    const bool ok = attack_target(me, camp.handle, camp.pos, camp.hp);
+    camp_attack_ = false;
+    return ok;
+}
 
 bool Bot::attack_target(bc::champion& me, const bc::unit& target, vec2 target_pos, float target_hp) {
     if (!can_attack_ || cheb(pos_, target_pos) > range_) return false;
@@ -2902,6 +3105,13 @@ bool Bot::attack_target(bc::champion& me, const bc::unit& target, vec2 target_po
         if (s.kind != bc::ability_kind::attack_reset || !spell_ready(i)) continue;
         // A dead target leaves vision; querying it would throw.
         if (target_hp <= strength_) break;
+        if (kSaveReset && camp_attack_) {
+            // Keep the second hit for the champion fight about to start.
+            bool coming = false;
+            for (const auto& e : enemies_)
+                if (!harmless_on_spawn(e) && cheb(e.pos, pos_) <= kSaveResetRange) coming = true;
+            if (coming) break;
+        }
         if (cast(s)) {
             can_attack_ = true;
             try {
@@ -3024,6 +3234,10 @@ void Bot::use_combat_spells(bc::champion& me, const SeenCamp* camp, const SeenCh
             // Stuns are wasted on harmless or sleeping camps; damage spells are not.
             const bool stun_only = s.kind == bc::ability_kind::cc && s.modifier <= 0;
             if (enemy && s.kind == bc::ability_kind::cc && !stun_turn() && cheb(enemy->pos, pos_) <= static_cast<int>(s.range)) break;
+            // kStunCombo: a stun with nobody to follow it up waits, unless the enemy can hit us next turn.
+            if (kStunCombo && enemy && s.kind == bc::ability_kind::cc && cheb(enemy->pos, pos_) > enemy->range + 1 &&
+                combo_hitters(*enemy) < kComboHitters)
+                break;
             if (enemy && cheb(enemy->pos, pos_) <= static_cast<int>(s.range)) {
                 if ((kStunDiscipline || kStunBuffs) && s.kind == bc::ability_kind::cc && stun_wasted(*enemy)) {
                     // Another enemy in range takes it; a pure stun otherwise waits.
@@ -4842,12 +5056,14 @@ void Bot::shop(bc::champion& me, bool consumables) {
     const auto& build = build_for(type_);
     while (gold_ >= 30 && build_step_ < build.size()) {
         const auto& step = build[build_step_];
-        const int cost = static_cast<int>(step.item.cost());
+        // kPowerEnd: strength builds finish on Power (6 strength an emblem) instead of Bruiser (5 + 1 + 1).
+        const bc::item_type item = kPowerEnd && step.item == bc::item_type::bruiser_shard_of_strength ? bc::item_type::power_shard_of_strength : step.item;
+        const int cost = static_cast<int>(item.cost());
         if (cost <= 0 || gold_ < cost) break;
         const int n = std::min(step.count - build_bought_, gold_ / cost);
         if (n <= 0) break;
         try {
-            me.buy(step.item, static_cast<std::uint32_t>(n));
+            me.buy(item, static_cast<std::uint32_t>(n));
         } catch (const bc::error& err) {
             // Only skip a step the shop will never sell us. A stun, a channel or being off
             // spawn passes: one stun used to burn through Tavi's whole build (Tavi shops in
