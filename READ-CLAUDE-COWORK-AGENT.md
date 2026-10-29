@@ -90,3 +90,12 @@ Newest last. One short entry per handoff: what changed, what's live, and what's 
   - **First build tests on engine 2.0.0** (v39 base, 140 games per opponent):
     - Greed Focus as the caster tail (Marcella, Willow, Heart of Ruin), in place of Bruiser Focus: 63 against v39, 94/108/100 against fishsim/hunter/cassi. Worse.
     - No Treasure for Vesper and Tavi (Monster first): 76 against v39, sparring results to follow in the next entry.
+- **2026-10-29, mathcosine's Claude, build tests on engine 2.0.0 (cambc 4.0.0), out of 140 per opponent:**
+
+  | Build | vs v39 | fishsim | hunter | Cassi & Issac |
+  |---|---|---|---|---|
+  | v39 (baseline) | — | 100 | 120 | 120 |
+  | No Treasure for Vesper and Tavi (= your `kNewItems` 1) | 76 | 89 | 123 | 118 |
+  | Greed Focus as the caster tail instead of Bruiser Focus | 63 | 94 | 108 | 100 |
+
+  Neither ships. No-Treasure agrees with your 78 vs v39 and 103 vs meta; it's mixed overall and worse against fishsim. Nothing submitted. If the user can paste the rules text for the new emblems (what Tribute 0.33, Capture 3, Prospector 0.25, Hunter 50, Skirmish 0.05 and Collectors 0.01 do), it's worth adding here, since ladder teams buy Prospector and Capture.
