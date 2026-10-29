@@ -397,6 +397,32 @@ constexpr int kOnWayRecheck = 6;
 // 116/105/126, deaths against hunter 9.1 a game (10.4); farming unchanged. On (v37 test).
 constexpr bool kOverkill = true;
 constexpr int kOverkillRange = 12;
+// Spare champions changed nothing on 00rushbait-v2 with no opponent: solo jobs only went to camps
+// with no monsters (kSoloCamps off) unless the squad was waiting, and every camp there has wolves or
+// elks. kCalmSolo: no enemy champion has hit us in kCalmSoloRounds rounds, none of us died in the
+// last 100 and we are above 60% health: take a camp within kCalmSoloDist tiles on foot alone,
+// monsters included when solo_camp_ok says one champion clears it, whatever the solo cap or the
+// v34 "together" rule; enemies merely in sight (across the holes, say) do not block it, our own
+// recent deaths there still do. Spare champions (kOverkill) may take such camps near the squad.
+constexpr bool kCalmSolo = false;
+constexpr int kCalmSoloRounds = 40;
+constexpr int kCalmSoloDist = 12;
+// First version (4 maps with no opponent): 00rushbait-v2 unchanged, as both spawns touch there and
+// every camp counts as contested, which the opening rule keeps solos off; 01gold-rush 1,528 rounds
+// to 1,000 gems against 1,298 and 02harvest 1,329 against 1,166, from long solo fights pulling
+// champions off the squad's gem camps. Now calm solos may take contested camps (not enemy-side ones)
+// in the opening, and a monster camp only when one champion clears it in kCalmSoloClear rounds.
+constexpr float kCalmSoloClear = 10.f;
+// Result (4 maps, no opponent): 00rushbait-v2 still unchanged (every camp on our bank needs 2+
+// champions by the forecast, the rest are on their bank), 01gold-rush 1,598 rounds against 1,298,
+// 00pilgrimage 1,845 against 1,705. Off.
+// kTwoSquadsCalm: the two-squad split (kTwoSquads, below) only while none of us died in the last 150
+// rounds: pairs farm two camps at once when the enemy leaves us alone.
+// Out of 140 against v37: always 46, 106/89/109 against Cassi & Issac / fishsim / hunter (v37
+// 111/104/131), farming 1,194 rounds against 1,132; calm only 53, 105/97/116, 1,198. On
+// 00rushbait-v2 with no opponent pairs took 1,657 rounds to 1,000 gems against 1,456: its elk camps
+// fall much faster to four. Off.
+constexpr bool kTwoSquadsCalm = false;
 constexpr float kOverkillRounds = 12.f;
 // Fuel the squad pass leaves for the stop-on-the-way check: each camp it looks at costs about 1,000
 // (the walk from the best camp to a camp tile searches the tiles around it). Without it the check
@@ -1497,7 +1523,7 @@ bool Bot::in_their_third(vec2 p) const {
 
 bool Bot::split_active() const {
     // Two squads: both members of the second alive and at least two left in the first.
-    if (!kTwoSquads || slots_ < 4 || slot_ < 0) return false;
+    if (!(kTwoSquads || (kTwoSquadsCalm && recent_team_deaths(150) == 0)) || slots_ < 4 || slot_ < 0) return false;
     int a = 0, b = 0;
     for (int i = 0; i < slots_; ++i) {
         const auto s = comms_.slot(i);
@@ -1850,7 +1876,7 @@ void Bot::play_turn() {
                     ally_seen_round_[i] = round_;
                 }
     }
-    if (kRecallSafe == 2 || kUnseenWard || kHurtFlee || kChaseGiveUp || kCalmSplit || kMirrorFarm) {
+    if (kRecallSafe == 2 || kUnseenWard || kHurtFlee || kChaseGiveUp || kCalmSplit || kMirrorFarm || kCalmSolo) {
         const float from_champs = damage_taken_ - incoming_camp_damage(pos_);
         unseen_hit_ = false;
         if (from_champs > 1.f) {
@@ -4236,8 +4262,12 @@ void Bot::choose_task(bc::champion& me) {
     const bool together = !calm_farm && kTogether && slots_ >= 4 && (round_ < kTogetherRounds || pressured()) &&
                           (!kCalmSplit || round_ - last_champ_hurt_round_ <= kCalmSplitMemory || recent_team_deaths(150) >= 1);
     const int solo_cap = together ? 0 : calm_farm ? std::max(1, active - 1) : kClusterSolos ? std::max(1, active - 2) : std::max(1, early ? active / 2 : active / 3);
-    const bool may_solo = waiting || (straggler && !together) || solos < solo_cap || squad < 0 || spare;
-    const bool near_only = spare && !(waiting || (straggler && !together) || solos < solo_cap || squad < 0);
+    const bool calm_solo = kCalmSolo && round_ - last_champ_hurt_round_ > kCalmSoloRounds && recent_team_deaths(100) == 0 &&
+                           hp_ > max_hp_ * 0.6f;
+    const bool base_may = waiting || (straggler && !together) || solos < solo_cap || squad < 0;
+    const bool may_solo = base_may || spare || calm_solo;
+    const bool near_only = spare && !base_may && !calm_solo;
+    const bool limited = !base_may;  // only spare or calm permission: jobs close by
     const float my_dps = dps_of(type_, strength_, focus_);
     const auto& order = nearest_groups();
     int solo = -1;
@@ -4247,12 +4277,14 @@ void Bot::choose_task(bc::champion& me) {
         if (!may_solo) break;
         if (kSoloFuelFirst && bc::fuel_remaining() < plan_floor(kSoloPlanFloor)) break;
         if (g.unreachable || g.id > kMaxTarget || g.state == GroupState::reward || g.id == squad) continue;
-        if (!g.harmless && !kSoloCamps && !waiting) continue;
+        const bool fight_job = !g.harmless && !kSoloCamps && !waiting;  // a monster camp the old rules kept from solos
+        if (fight_job && !(kCalmSolo && (spare || calm_solo))) continue;
         if (round_ < avoid_until_[g.id & 63]) continue;
         bool soft = false;
         if (opening_blocks(g, false)) {
-            if (!(kSoftClusters && g.harmless && g.contested)) continue;
-            soft = true;
+            const bool calm_ok = calm_solo && g.contested && g.side != 1;  // contested ground, not theirs
+            if (!calm_ok && !(kSoftClusters && g.harmless && g.contested)) continue;
+            soft = !calm_ok;
         }
         if (comms_.claimed_by_other(slot_, Task::solo, g.id, slots_) ||
             comms_.claimed_by_other(slot_, Task::capture, g.id, slots_))
@@ -4260,12 +4292,14 @@ void Bot::choose_task(bc::champion& me) {
         if (bc::fuel_remaining() < plan_floor(kSoloPlanFloor)) break;
         if (cheb(g.anchor, pos_) > 24) continue;
         if (near_only && cheb(g.anchor, squad_at) > kOverkillRange) continue;
-        if (kSoloSafe && unsafe_alone(g)) continue;
+        if (kSoloSafe && (calm_solo ? round_ - death_round_ <= 150 && cheb(death_pos_, g.anchor) <= 8 : unsafe_alone(g))) continue;
         if (kFieldCamp && field() && !in_field(g.anchor)) continue;
         // Fighting camps cost a distance field and a forecast each: only with fuel to spare.
         if (!g.harmless && (bc::fuel_remaining() < 35000 || !solo_camp_ok(g, my_dps))) continue;
         const int d = dist_to_group(g);
         if (d == kUnreached || d > (squad < 0 ? 60 : 20)) continue;
+        if (kCalmSolo && (fight_job || limited) && d > kCalmSoloDist) continue;  // close by only
+        if (kCalmSolo && fight_job && forecast(g, my_dps).rounds > kCalmSoloClear) continue;  // quick ones only
         if (!g.alive_by(round_ + d + 5)) continue;
         // A side job has to be done (there, clear, capture, back) before the squad's camp returns.
         if (waiting && 2 * d + forecast(g, my_dps).rounds + kCaptureRounds > squad_wait) continue;
