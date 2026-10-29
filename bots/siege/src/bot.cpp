@@ -2641,6 +2641,18 @@ bool Bot::fight_camps(bc::champion& me) {
     }
     if (!focus) return false;
     if (task_ != Task::capture) set_status(task_ == Task::solo ? Task::solo : Task::farm, gid);
+    // Walk into reach of the focus; when no tile in reach of it can be walked to (an elk walled in
+    // by its own gem clusters on 00gem-fields), clear the way: the nearest camp of the group we can
+    // get at. Before, the whole squad stood beside the group for the rest of the game.
+    auto approach_group = [&](int reach) {
+        if (approach_unit(me, focus->pos, reach) || moved_) return;
+        std::vector<std::pair<int, vec2>> others;
+        for (const auto& c : camps_)
+            if (c.group == gid && c.pos != focus->pos) others.push_back({cheb(c.pos, pos_), c.pos});
+        std::sort(others.begin(), others.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        for (const auto& [d, p] : others)
+            if (d > reach && approach_unit(me, p, reach)) return;
+    };
 
     if (ranged_) {
         // Ranged cannot walk and attack in one turn: shoot whatever is in range.
@@ -2651,12 +2663,12 @@ bool Bot::fight_camps(bc::champion& me) {
         }
         // Out of range: a spell may still reach (range 4) before walking in.
         use_combat_spells(me, focus, nullptr);
-        if (!moved_) approach_unit(me, focus->pos, range_);
+        if (!moved_) approach_group(range_);
         return true;
     }
 
     // Melee: step next to the focus, then hit it (or whatever is adjacent).
-    if (cheb(focus->pos, pos_) > 1) approach_unit(me, focus->pos, 1);
+    if (cheb(focus->pos, pos_) > 1) approach_group(1);
     const SeenCamp* adjacent = nullptr;
     for (const auto& c : camps_)
         if (c.group == gid && cheb(c.pos, pos_) <= 1 && better(&c, adjacent)) adjacent = &c;
@@ -2871,6 +2883,7 @@ bool Bot::try_move(bc::champion& me, vec2 delta) {
         return true;
     }
     occupied_.set(dest);
+    occupied_board_.set(dest);
     return false;
 }
 
@@ -2915,10 +2928,23 @@ bool Bot::approach(bc::champion& me, bc::bitboard goal) {
     dest.clear();
     dest.set(pos_);
     bc::bitboard visited;
-    scratch_field_.compute_to(walls, goal, dest, visited);
-    if (scratch_field_.get(pos_) == kUnreached) return false;
-    for (auto step : scratch_field_.next_moves_from(pos_))
-        if (try_move(me, step)) return true;
+    // A teammate standing in a bush is out of sight, so its tile looks free until a step onto it
+    // fails: search again around it (00breadcrumbs: three of us blocked each other for 1,500 rounds).
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        scratch_field_.compute_to(walls, goal, dest, visited);
+        if (scratch_field_.get(pos_) == kUnreached) return false;
+        bool blocked = false;
+        for (auto step : scratch_field_.next_moves_from(pos_)) {
+            if (try_move(me, step)) return true;
+            if (moved_ || !can_move_) return false;
+            walls.set(pos_ + step);
+            blocked = true;
+        }
+        if (!blocked) return false;
+        goal &= ~walls;
+        if (goal.is_empty()) return false;
+        visited.clear();
+    }
     return false;
 }
 
