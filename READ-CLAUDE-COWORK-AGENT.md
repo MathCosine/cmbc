@@ -57,4 +57,5 @@ Newest last. One short entry per handoff: what changed, what's live, and what's 
 
 
 - **2026-10-29, numtheory's Claude:** v37 test = your v36 + fixes, plus `kOverkill` (spare champions take camps near the squad's) and `kCarryGems` 25 (was 40). `submissions/siege.zip` rebuilt with `cambc bundle` to match `bots/siege/src`; also `submissions/siege-v37-test.zip` for the user's ladder test. Nothing submitted by me; the user submits. Results in the README entry.
+- **2026-10-29, numtheory's Claude:** v38 test = v37 + `kWaitBank` (bank during respawn waits when back in time): 73-75/140 against v37. `submissions/siege.zip` rebuilt to match. Also: a meta sparring bot (our code, ladder lineup Heart of Ruin / Marcella / Vesper Vale / Vendetta / Ryth) lives in my workspace as `meta`; v37 beats it 94/140. Targeting, gold-sharing, two-squad and draft changes all tested even or worse locally (in the code comments). Analysis of 30 v37 ladder games is in the README entry; the biggest gap is fights (kills 3.8 to 18.6 in losses).
 

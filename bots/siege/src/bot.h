@@ -283,6 +283,11 @@ private:
     bool unseen_hit_ = false;            // hit this round by a champion none in sight could reach us from
     void reveal_ward(bc::champion& me);
     bool power_play() const;
+    int living_count() const;
+    bool healer_seen(const SeenChamp& e) const;
+    std::array<float, 16> enemy_last_hp_{};
+    std::array<int, 16> enemy_hp_round_{};
+    std::array<int, 16> enemy_healed_round_{};
     int hidden_grass(vec2 p) const;
     bool safe_wait_step(bc::champion& me, const Group& g, int keep);
     bool crystal_escape(bc::champion& me, const std::vector<std::pair<vec2, int>>& threats);

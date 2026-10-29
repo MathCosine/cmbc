@@ -38,6 +38,10 @@ constexpr bool kVargDraft = false;
 constexpr int kWillowDraft = 2;
 // Willow in the 3-4 champion draft too (Vesper Vale, Marcella, Willow, Ryth): in place of Ryth with
 // three, of Tavi with four.
+// Retested on v37 (out of 140 against v37 / meta / Cassi & Issac / fishsim / hunter; v37 94/111/104/131
+// against the last four): Willow in the 3-4 draft 73, 91/109/100/129, on small maps 44/56 against
+// fishsim (v37 48); Heart of Ruin in it 57, 86/111/85/124, small maps 29/56; Heart of Ruin for Ryth
+// with five 65, 91/104/94/108. Our draft stays.
 constexpr bool kWillowSmall = false;
 
 void play_draft() {

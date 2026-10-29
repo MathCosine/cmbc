@@ -436,6 +436,31 @@ constexpr bool kTwoSquadsCalm = false;
 // better. Off: gold on Marcella pays.
 constexpr bool kShareGold = false;
 constexpr int kShareGoldMin = 60;
+// v37 ladder, 00pilgrimage (user's notes): champions stood at our lane's camps waiting for respawns,
+// and nobody took the 88-gem elk camp in the middle (4 elks, 8 gold and 4 gem clusters, every 60
+// rounds); locally neither side takes it before round 530, as it needs trips home and sieges wait
+// for kSiegeFrom. kWaitBank: waiting at the squad's camp for its respawn with kWaitBankMin+ gems, go
+// bank when the walk to the altar and back plus the channel fits in the wait. kJackpotSiege: the
+// jackpot may be besieged from round kJackpotSiegeFrom with 4+ of us alive.
+// Out of 140 against v37 (111/104/131 against Cassi & Issac / fishsim / hunter, farming 1,132 rounds
+// to 1,000 gems): wait-bank 75, 112/106/130, 1,131 (on, v38); jackpot siege 71, 113/103/127, 1,137
+// (00pilgrimage with no opponent: first jackpot clear at round 520 against 760; off).
+constexpr bool kWaitBank = true;
+constexpr int kWaitBankMin = 5;
+constexpr bool kJackpotSiege = false;
+constexpr int kJackpotSiegeFrom = 100;
+// v37 ladder (30 games): in losses we dealt 26.5k champion damage to their 30.2k but got 3.8 kills to
+// their 18.6. Their Heart of Ruin took the most of it (8.6k a game) and healed or shielded 8.1k back,
+// while their damage dealers (Marcella 9.9k dealt, Vendetta 9.0k, Vesper Vale 7.4k) took less and
+// rarely died. kTankAware: Heart of Ruin counts 0.3 (was 0.6) while above 30% health, and an enemy
+// we saw gain health away from its spawn counts half. kStickyFocus: the team's focus enemy is kept
+// while it is alive and in sight within 8 tiles, instead of being replaced by whoever we hit.
+// Out of 140 against v37 (meta sparring bot, the ladder lineup Heart of Ruin / Marcella / Vesper
+// Vale / Vendetta / Ryth on our code: 94; Cassi & Issac / fishsim / hunter 111/104/131): tank-aware
+// 71 head to head, 89 against meta, 115/104/129; sticky focus 64, 92, 111/110/126; both 69, 93,
+// 110/110/126. Even locally, where every sparring bot fights as we do. Off.
+constexpr bool kTankAware = false;
+constexpr bool kStickyFocus = false;
 constexpr float kOverkillRounds = 12.f;
 // Fuel the squad pass leaves for the stop-on-the-way check: each camp it looks at costs about 1,000
 // (the walk from the best camp to a camp tile searches the tiles around it). Without it the check
@@ -1052,6 +1077,15 @@ void Bot::observe(bc::champion& me) {
     };
     enemies_.clear();
     for (const auto& c : bc::vision::champions(team::enemy)) enemies_.push_back(seen(c, true));
+    if (kTankAware)
+        for (const auto& e : enemies_) {
+            // Health gained since last turn away from its spawn: it heals or shields itself.
+            const int id = enemy_id(e) & 15;
+            if (enemy_hp_round_[id] == round_ - 1 && e.hp > enemy_last_hp_[id] + 1.f && !world().enemy_spawn.get(e.pos))
+                enemy_healed_round_[id] = round_;
+            enemy_last_hp_[id] = e.hp;
+            enemy_hp_round_[id] = round_;
+        }
     note_sightings();
     allies_seen_.clear();
     for (const auto& c : bc::vision::champions(team::ally)) {
@@ -1447,7 +1481,8 @@ float Bot::kill_value(const SeenChamp& e) const {
     // Damage it deals per point of health it has left: kill what hurts most and dies fastest.
     float v = std::max(e.dps, 1.f) / std::max(e.hp, 1.f);
     if (e.type == bc::champion_type::cassi) v *= 2.f;  // her death takes Issac with her
-    if (e.type == bc::champion_type::heart_of_ruin && e.hp > e.max_hp * 0.3f) v *= 0.6f;  // stronger as he bleeds
+    if (e.type == bc::champion_type::heart_of_ruin && e.hp > e.max_hp * 0.3f) v *= kTankAware ? 0.3f : 0.6f;  // stronger as he bleeds
+    if (kTankAware && healer_seen(e)) v *= 0.5f;  // heals what we deal
     if (e.hp <= strength_ * 1.05f) v *= 4.f;  // dies to our next hit
     return v;
 }
@@ -2330,7 +2365,11 @@ bool Bot::fight_enemies(bc::champion& me) {
     if (slots_ <= 5) {
         for (const auto& e : enemies_)
             if (enemy_id(e) == comms_.focus() && huntable(e) && cheb(e.pos, pos_) <= reach) target = &e;
-        if (target) comms_.set_focus(enemy_id(*target));
+        bool keep = false;
+        if (kStickyFocus && comms_.focus() >= 0)
+            for (const auto& e : enemies_)
+                if (enemy_id(e) == comms_.focus() && huntable(e) && cheb(e.pos, pos_) <= 8) keep = true;
+        if (target && !keep) comms_.set_focus(enemy_id(*target));
     }
     if (kFocusStunned) {
         // A stunned enemy can neither hit back nor run: everyone in reach takes it.
@@ -3298,6 +3337,20 @@ float Bot::dps_now(const bc::champion& c, bc::champion_type t, float strength, f
     return d;
 }
 
+int Bot::living_count() const {
+    int n = 0;
+    for (int i = 0; i < slots_ && i < kMaxSlots; ++i) {
+        const auto st = comms_.slot(i);
+        if (i == slot_ || !(st.task == Task::other && st.target == kDead)) ++n;
+    }
+    return n;
+}
+
+bool Bot::healer_seen(const SeenChamp& e) const {
+    const int id = enemy_id(e) & 15;
+    return enemy_healed_round_[id] > 0 && round_ - enemy_healed_round_[id] <= 60;
+}
+
 bool Bot::power_play() const {
     return kPowerPlay && enemy_roster_.size() >= 2 && static_cast<int>(enemy_roster_.size()) - enemies_alive_ >= 2;
 }
@@ -3600,8 +3653,14 @@ bool Bot::tribute(bc::champion& me) {
     const bool wins = bc::global_submitted_gems(team::ally) + gems_ + 150 >= bc::constants::winning_gems;
     // With small bags, enemies seen in the last few rounds count too: they are still about.
     const bool threatened = kSmallBags ? enemy_recent(kRecentEnemy) : !enemies_.empty();
+    bool wait_bank = false;
+    if (kWaitBank && gems_ >= kWaitBankMin && task_ == Task::farm && target_ >= 0 && target_ == comms_.squad_target()) {
+        // Waiting out a respawn: bank now if we are back before the camp is.
+        const auto& g = world().groups[target_];
+        if (g.state == GroupState::respawning) wait_bank = 2 * d + channel <= g.respawn_round - round_ + 3;
+    }
     const bool want = gems_ >= carry_gems() || endgame || wins || d <= 6 || (threatened && gems_ >= kSmallBag) ||
-                      task_ == Task::other;
+                      task_ == Task::other || wait_bank;
     if (!want) {
         escort_wait_ = 0;
         return false;
@@ -3882,7 +3941,8 @@ float Bot::siege_rounds(const Group& g, float team_dps, float team_hp, bool unlo
     const float damage = forecast(g, team_dps).damage;
     if (damage <= team_hp * (unlocks ? 0.8f : kSiegeShare)) return 0;
     // A young team besieging a monolith in contested ground loses the early game.
-    if (!unlocks && round_ < kSiegeFrom && !early_siege_ok_) return -1;
+    const bool jackpot_ok = kJackpotSiege && g.id == world().jackpot && round_ >= kJackpotSiegeFrom && living_count() >= 4;
+    if (!unlocks && round_ < kSiegeFrom && !early_siege_ok_ && !jackpot_ok) return -1;
     const float trips = damage / std::max(team_hp * kTripShare, 1.f);
     // With every altar walled in, opening one is the only way to score, however many trips it takes
     // (01boss-battle: the only altar sits behind a 20,000-health monolith; we never started on it
