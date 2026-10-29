@@ -47,7 +47,7 @@ constexpr float kHealCost = 1.0f;
 // 140 against 40 (with kOverkill): 73, 111/104/131 against Cassi & Issac / fishsim / hunter
 // (116/105/126), gems lost on death 92.9 a game against 108.9, farming unchanged (1,132 rounds).
 // kSmallBags instead: 69, 117/107/121, farming 1,146.
-constexpr int kCarryGems = 25;
+constexpr int kCarryGems = 25;  // engine 2.0.0: 40 gave 70/107/112 against v39 / meta / hunter (v39 -/104/121)
 // Planning assumes this share of the paper damage: travel, retreats and stragglers
 // halve what a squad really deals (a golem group forecast at 19 rounds took 70).
 // Rough share of the team's damage that lands while fighting camps. 0.6 made big camps near our
@@ -96,8 +96,12 @@ constexpr bool kRegroup = false;
 // Cassi, Ryth) kept ours from walking away once they were in range. Engine 2.0.0, out of 140
 // against v39 / meta / hunter / fishsim (v39 -/104/121/105): 73/107/128/97, deaths a game 12.0 /
 // 7.9 / 9.5 / 7.1 (v39 14.6/10.3/10.4/7.7), 71% of the deaths in 4+ death fights against meta
-// theirs (v39 66%); with kRegroup 79/96/124/92.
-constexpr bool kReachDanger = false;
+// theirs (v39 66%); with kRegroup 79/96/124/92. v40 = this with kNewItems 2 (Prospector): 82 against
+// v39, 109/127/99/120 against meta / hunter / fishsim / v9_fish (v39 104/121/105/115), deaths a game
+// 8.0/9.3/7.2/5.0 (v39 10.3/10.4/7.7/5.5), 71% of the deaths in 4+ death fights against meta theirs
+// (v39 66%), 1,114 rounds to 1,000 gems with no opponent (v39 1,136). With kStunCombo and
+// kWillowCombo on top: 71, 101/127/99/123. On (v40 test).
+constexpr bool kReachDanger = true;
 constexpr int kRegroupSize = 3;
 constexpr int kRegroupWait = 60;
 // Targets near where we died lately, or where 2+ enemies were seen, score lower; a squad
@@ -323,30 +327,37 @@ constexpr bool kFocusStunned = true;
 // that enemy the team's focus. Retreating champions still stun whoever is closest, as before.
 // Ryth's stun is an area damage spell with a stun duration (only Tavi's is a pure stun); the first
 // version covered Tavi only: out of 140 against v39 / meta / hunter / fishsim (v39 -/104/121/105)
-// 73/102/120/95, needing 3 hitters 66/99/115/95. Now it covers both (retest queued).
+// 73/102/120/95, needing 3 hitters 66/99/115/95. Covering both: 70/96/124/95; with kWillowCombo
+// 69/97/123/95; with kClumpStun 70/97/124 (v39 -/104/121/105). Off: locally nobody fights as one pack
+// the way inter fish does, so it may still be worth a ladder test.
 constexpr bool kStunCombo = false;
 constexpr int kComboHitters = 2;
 // kClumpStun: an area stun (Ryth's lands on every enemy within 1 of its target) also counts half the
-// damage per round of each other enemy it would hold; their five moved as one pack.
+// damage per round of each other enemy it would hold; their five moved as one pack. Tested with
+// kStunCombo (see there). Off.
 constexpr bool kClumpStun = false;
 // kSaveReset: an attack reset is not spent on a camp while an enemy champion is within
-// kSaveResetRange, so the double hit is ready when the fight starts.
+// kSaveResetRange, so the double hit is ready when the fight starts. Out of 140 against v39 / meta /
+// hunter (v39 -/104/121): 68/101/120. Off.
 constexpr bool kSaveReset = false;
 constexpr int kSaveResetRange = 10;
 // kPowerEnd: strength builds finish on Power emblems (6 strength each) instead of Bruiser (5 strength,
-// 1 health, 1 focus); inter fish built 20-27 Power emblems a game.
+// 1 health, 1 focus); inter fish built 20-27 Power emblems a game. Out of 140 against v39 / meta /
+// hunter: 64/105/113; 1,129 rounds to 1,000 gems (v39 1,136). Off.
 constexpr bool kPowerEnd = false;
 // kSnipe: a damage spell or stun in range goes first on an enemy recalling or channelling a tribute
 // (any hit cancels the channel; their cornered champions recalled as soon as they saw us), and a
-// damage spell on an enemy it kills outright.
+// damage spell on an enemy it kills outright. Fires 9-14 times a game; out of 140 against v39 / meta /
+// hunter / fishsim (v39 -/104/121/105): 68/105/123/97. Off.
 constexpr bool kSnipe = false;
 // kWillowCombo: while the team's focus is stunned within Willow's reach, her one cast a turn goes on
 // the attack reset (a second hit on it) instead of a heal, unless a teammate within 4 is under
 // kWillowUrgent of its health.
-constexpr bool kWillowCombo = false;
+constexpr bool kWillowCombo = false;  // tested with kStunCombo (see there). Off.
 constexpr float kWillowUrgent = 0.4f;
 // kHoleEscape: in danger, a dasher hops over a hole tile to a landing kHoleEscapeWalk+ tiles away
-// on foot (or unreachable on foot), as far from the threats as it can; walkers must go round.
+// on foot (or unreachable on foot), as far from the threats as it can; walkers must go round. Out of
+// 140 against v39 / meta / hunter / fishsim: 64/108/120/100. Off.
 constexpr bool kHoleEscape = false;
 constexpr int kHoleEscapeWalk = 8;
 constexpr bool kPunish = true;
@@ -496,7 +507,8 @@ constexpr float kCalmSoloClear = 10.f;
 // Out of 140 against v37: always 46, 106/89/109 against Cassi & Issac / fishsim / hunter (v37
 // 111/104/131), farming 1,194 rounds against 1,132; calm only 53, 105/97/116, 1,198. On
 // 00rushbait-v2 with no opponent pairs took 1,657 rounds to 1,000 gems against 1,456: its elk camps
-// fall much faster to four. Off.
+// fall much faster to four. Off. Engine 2.0.0 retest of the calm split, out of 140 against v39 / meta
+// / hunter: 47/84/115; 1,219 rounds to 1,000 gems (v39 1,136). Off.
 constexpr bool kTwoSquadsCalm = false;
 // Gold spread. Locally Marcella earns 48-49% of our team's gold (Willow 9-11%, Ryth 13%): teammates
 // leave her every gem reward she can reach, its gold included, so the others rarely buy items. On
@@ -921,7 +933,9 @@ struct BuildStep {
 // (Marcella, Heart of Ruin, Willow) buy Tribute focus shards first. On engine 2.0.0, out of 140
 // against v39 / against meta (v39 104), and rounds to 1,000 gems with no opponent (v39 1,136): mode 1
 // 78 / 103 / 1,131; mode 2 74 / 99 / 1,114; mode 3 72 / 99 / 1,122; mode 4 66 / 106 / 1,141.
-constexpr int kNewItems = 0;
+// Against hunter / fishsim (v39 121/105): mode 1 118/87, mode 2 119/99. Mode 2 with kReachDanger is
+// v40 (results there). On, mode 2 (v40 test).
+constexpr int kNewItems = 2;
 inline bc::item_type new_item(std::uint32_t id) { return bc::item_type{static_cast<bc::item_type::enum_type>(id)}; }
 
 const std::vector<BuildStep>& build_for(bc::champion_type t) {
