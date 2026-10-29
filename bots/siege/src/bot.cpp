@@ -382,6 +382,10 @@ constexpr bool kOnTheWay = true;
 constexpr int kOnWayMax = 14;
 constexpr int kOnWayFree = 7;
 constexpr int kOnWayRecheck = 6;
+// Fuel the squad pass leaves for the stop-on-the-way check: each camp it looks at costs about 1,000
+// (the walk from the best camp to a camp tile searches the tiles around it). Without it the check
+// ran after the pass had spent the turn down to its floor, and v36 ran dry 23 times a game (v35: 3).
+constexpr std::uint64_t kOnWayFuel = 10000;
 constexpr float kSiegeEarlyEdge = 2.f;
 // Out of 140 on top of v30 (v30 build 70/124/105/123; this code with all four off 68/124/108/123):
 // floor 0.4 62/128/105/124 (deaths against fish 6.0/8.7, was 6.9/9.7); ward + flee 67/127/103/119;
@@ -3879,7 +3883,7 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
     std::array<signed char, 64> quick{};  // 0 not worked out yet, 1 quick, -1 not
     for (const int gi : order) {
         auto& g = W.groups[gi];
-        if (bc::fuel_remaining() < plan_floor(kSquadPlanFloor)) break;
+        if (bc::fuel_remaining() < plan_floor(kSquadPlanFloor) + (kOnTheWay ? kOnWayFuel : 0)) break;
         if (g.unreachable || (g.harmless && !kSquadClusters) || g.id > kMaxTarget || g.id == exclude || g.state == GroupState::reward) continue;
         if (g.harmless && bc::fuel_remaining() < plan_floor(kClusterPlanFloor)) continue;
         if (g.id == other_party_target_) continue;
@@ -4013,6 +4017,7 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
             float pick_rate = rate_b;
             for (int i = 0; i < n_way; ++i) {
                 const auto& a = way[i];
+                if (bc::fuel_remaining() < plan_floor(kSquadPlanFloor)) break;  // nearest first
                 if (a.id == best || a.wait > 0 || !a.quick || a.mods < 0.6f) continue;
                 const int back = W.dist_on(*fb, W.groups[a.id].anchor);
                 if (back == kUnreached) continue;
