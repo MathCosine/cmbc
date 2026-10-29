@@ -61,3 +61,31 @@ Newest last. One short entry per handoff: what changed, what's live, and what's 
 - **2026-10-29, mathcosine's Claude:** swept v38 with `pve.py` (all 70 maps, both sides). One freeze: 01yellow-brick-road as Team B stopped at 726 gems for 1,000 rounds. Bisected to v37 (`kOverkill`), but the cause is older: `kHoldCapture` held a capture tile beside the enemy spawn (enemies standing on their spawn within reach count as a fight), which skipped the 40-round `kCaptureTimeout` in `capture()`. Holding now stops at the time limit; nothing else changed. Results are in the README entry "Capture holds give up". Nothing submitted. Tip: after each version, run `pve.py` and look for `fin 2000`, or one side far slower than the other. All four stuck states so far were found that way, and none of them show up in head-to-head totals.
 - **2026-10-29, mathcosine's Claude (observations, no code):** in `pve.py` games with no opponent, banked gems sit flat for 400+ rounds on 00contest, 00stampede, 01boss-battle and 02guardians (gems only from big camps or sieges, so this is expected), and on 01corridors as Team B (0 gems until round 400, while Team A finishes about 300 rounds sooner). On corridors the squad walks the whole corridor back and forth (all five at x 46 at round 100, back at x 9 by round 200) carrying 8-gem bags, so the target choice there may be worth a look. 00stampede still ends at 800-960 gems at round 2,000 with no opponent, since the elk-herd jackpot only opens late.
 - **2026-10-29, numtheory's Claude:** v39 test = v38 + your capture-hold fix + `kHoleDash` 1 (dashers hop single hole tiles when it saves 4+ tiles; dashes cross holes, not walls, confirmed locally). `submissions/siege.zip` rebuilt with `cambc bundle` to match `bots/siege/src`; also `submissions/siege-v39-test.zip` for the user's ladder test. Tested and left off: `kEscapeRecall`, `kFullScan`, `kBigFightCaution`, `kGroupRetreat`, fixed `kEarlyWarning`. Possible next steps: draft a second dasher (Heart of Ruin or Vendetta) on hole-heavy maps, and dash-aware routes. Nothing submitted by me; the user submits.
+- **2026-10-29, mathcosine's Claude: the ladder runs engine 2.0.0, upgrade to cambc 4.0.0.** Ranked matches now report `engineVersion` 2.0.0, while cambc 3.0.5 ran engine 1.0.3, so local tests were on the old rules. Run `python3 -m pip install --upgrade cambc`, then `cambc init --yes .`, then delete each bot's `.cambc` and rebuild. I committed the refreshed `sdk/` and `cambc.toml` (`sdk_version = "4.0.0"`). Changes, read from the SDK and probed in-engine (`item_type` metadata, `champion{t}.base_stats()` and abilities):
+  - **Emblems:**
+    - Monster: 10% to **15%** more damage to camps.
+    - Treasure: 20% to **10%** more gold.
+    - Seven new families. The meaning of each number is my guess from the name:
+      - Tribute 0.33
+      - Capture 3
+      - Prospector 0.25
+      - Hunter 50 (gold per kill?)
+      - Skirmish 0.05
+      - Collectors 0.01
+      - Greed: 25 shards (750 gold) combine into an emblem worth **35 shards** of the stat, with no passive. That's +40%; Power is +20%.
+  - **Champions:**
+    - Vesper Vale: Strength 55 to **45**.
+    - Tavi: stun spell 1.4 to **1.6** x Focus.
+    - Willow: Focus 120 to **140**.
+    - Ren: stun spell 0.75 to **1.1** x Focus.
+    - Varg: Strength 40 to **45**.
+    - Cassi: Focus 70 to **100**.
+    - Issac: Strength 40 to 45.
+    - Marcella: Focus growth 15 to 14.
+    - Heart of Ruin: Focus growth 12 to 10, Strength growth 3.5 to 3.
+    - Ryth and Marcella: Strength growth 5 to 4.5.
+    - Stellar: Focus growth 7 to 8.5.
+    - The rules text for the new passives isn't public in this container (the site's bundle is behind signed URLs). If the user or you have it, add it here.
+  - **First build tests on engine 2.0.0** (v39 base, 140 games per opponent):
+    - Greed Focus as the caster tail (Marcella, Willow, Heart of Ruin), in place of Bruiser Focus: 63 against v39, 94/108/100 against fishsim/hunter/cassi. Worse.
+    - No Treasure for Vesper and Tavi (Monster first): 76 against v39, sparring results to follow in the next entry.
