@@ -43,7 +43,11 @@ constexpr float kMaxUnlockTrips = 8.f;  // opening a walled-in altar is worth mo
 // costs roughly this many trips home and back on top of its own rounds.
 constexpr float kHealCost = 1.0f;
 // Tribute once the bag holds this many gems (or an altar is close): fewer trips, more farming.
-constexpr int kCarryGems = 40;
+// v37: 25 (was 40). Mundus banked 2-3 times as often as us in 23-29 gem bags (v36 ladder); out of
+// 140 against 40 (with kOverkill): 73, 111/104/131 against Cassi & Issac / fishsim / hunter
+// (116/105/126), gems lost on death 92.9 a game against 108.9, farming unchanged (1,132 rounds).
+// kSmallBags instead: 69, 117/107/121, farming 1,146.
+constexpr int kCarryGems = 25;
 // Planning assumes this share of the paper damage: travel, retreats and stragglers
 // halve what a squad really deals (a golem group forecast at 19 rounds took 70).
 // Rough share of the team's damage that lands while fighting camps. 0.6 made big camps near our
@@ -382,6 +386,18 @@ constexpr bool kOnTheWay = true;
 constexpr int kOnWayMax = 14;
 constexpr int kOnWayFree = 7;
 constexpr int kOnWayRecheck = 6;
+// v36 ladder against Mundus, 00rushbait-v2 (lost 242-1,019; 9 deaths to 3): all four of ours stood
+// around one camp at a time, and from round 200 to 500 we cleared 4 camps to their ~12 while three
+// of ours earned nothing (their four spread over different camps, ours stayed in one squad: the v34
+// "together" rule allows no solo job early or under pressure). kOverkill: more champions on the
+// squad's camp than it needs (1 for a cluster; otherwise the fewest that clear it within
+// kOverkillRounds rounds losing at most half their health): the spare ones, by slot order, may take
+// camps within kOverkillRange tiles of it, together rule or not.
+// Out of 140 against v36 + fixes (115/104/124 against Cassi & Issac / fishsim / hunter): 72,
+// 116/105/126, deaths against hunter 9.1 a game (10.4); farming unchanged. On (v37 test).
+constexpr bool kOverkill = true;
+constexpr int kOverkillRange = 12;
+constexpr float kOverkillRounds = 12.f;
 // Fuel the squad pass leaves for the stop-on-the-way check: each camp it looks at costs about 1,000
 // (the walk from the best camp to a camp tile searches the tiles around it). Without it the check
 // ran after the pass had spent the turn down to its floor, and v36 ran dry 23 times a game (v35: 3).
@@ -4190,10 +4206,38 @@ void Bot::choose_task(bc::champion& me) {
         straggler = there >= 2;
     }
     const bool calm_farm = kMirrorFarm && round_ - last_champ_hurt_round_ > kMirrorCalm && recent_team_deaths(150) == 0;
+    bool spare = false;  // kOverkill: one of the squad's champions its camp does not need
+    vec2 squad_at{-100, -100};
+    if (kOverkill && squad >= 0 && !split_active() && active >= 2) {
+        auto& sg = W.groups[squad];
+        squad_at = sg.anchor;
+        int on = 0, rank = 0;
+        for (int i = 0; i < slots_ && i < kMaxSlots; ++i) {
+            const auto st = comms_.slot(i);
+            if (i == slot_ || (st.task == Task::farm && st.target == squad)) {
+                if (i == slot_) rank = on;
+                ++on;
+            }
+        }
+        int needed = 1;
+        if (!sg.harmless) {
+            const float each_dps = team_dps / active, each_hp = team_hp / active;
+            needed = active;
+            for (int k = 1; k < active; ++k) {
+                const auto fc = forecast(sg, each_dps * k);
+                if (fc.rounds <= kOverkillRounds && fc.damage <= each_hp * k * 0.5f) {
+                    needed = k;
+                    break;
+                }
+            }
+        }
+        spare = on > needed && rank >= needed;
+    }
     const bool together = !calm_farm && kTogether && slots_ >= 4 && (round_ < kTogetherRounds || pressured()) &&
                           (!kCalmSplit || round_ - last_champ_hurt_round_ <= kCalmSplitMemory || recent_team_deaths(150) >= 1);
     const int solo_cap = together ? 0 : calm_farm ? std::max(1, active - 1) : kClusterSolos ? std::max(1, active - 2) : std::max(1, early ? active / 2 : active / 3);
-    const bool may_solo = waiting || (straggler && !together) || solos < solo_cap || squad < 0;
+    const bool may_solo = waiting || (straggler && !together) || solos < solo_cap || squad < 0 || spare;
+    const bool near_only = spare && !(waiting || (straggler && !together) || solos < solo_cap || squad < 0);
     const float my_dps = dps_of(type_, strength_, focus_);
     const auto& order = nearest_groups();
     int solo = -1;
@@ -4215,6 +4259,7 @@ void Bot::choose_task(bc::champion& me) {
             continue;
         if (bc::fuel_remaining() < plan_floor(kSoloPlanFloor)) break;
         if (cheb(g.anchor, pos_) > 24) continue;
+        if (near_only && cheb(g.anchor, squad_at) > kOverkillRange) continue;
         if (kSoloSafe && unsafe_alone(g)) continue;
         if (kFieldCamp && field() && !in_field(g.anchor)) continue;
         // Fighting camps cost a distance field and a forecast each: only with fuel to spare.
