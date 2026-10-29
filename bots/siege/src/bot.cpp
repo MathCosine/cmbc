@@ -2509,7 +2509,10 @@ bool Bot::fight_enemies(bc::champion& me) {
     // Spells reach further than basic attacks (range 4): fire them at the team's focus
     // enemy, or the weakest in range, before deciding where to walk.
     fire_spells(retreating);
-    if (kHoldCapture && capturing_here() && !in_danger && !clearly_losing) {
+    // Not past the capture time limit, though: enemies on their own spawn beside the reward keep it
+    // from landing, and holding it skipped capture()'s give-up (01yellow-brick-road: 340 rounds).
+    const bool capture_live = kCaptureTimeout <= 0 || capture_since_ < 0 || round_ - capture_since_ <= kCaptureTimeout;
+    if (kHoldCapture && capturing_here() && capture_live && !in_danger && !clearly_losing) {
         // Hold the region: hit whatever is in range without stepping off it.
         use_combat_spells(me, nullptr, target);
         if (target && cheb(target->pos, pos_) <= range_) attack_target(me, target->handle, target->pos, target->hp);
