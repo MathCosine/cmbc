@@ -188,7 +188,10 @@ private:
     float altar_zone(const Group& g) const;
     bool peel_back(bc::champion& me, const SeenChamp* target);
     bool answer_call(bc::champion& me);
-    std::vector<int> nearest_groups() const;
+    const std::vector<int>& nearest_groups() const;
+    mutable std::vector<int> nearest_;  // nearest_groups() for nearest_round_ at nearest_pos_
+    mutable int nearest_round_ = -1;
+    mutable vec2 nearest_pos_{-1, -1};
     const SeenCamp* breach_camp() const;
     bool on_spawn() const { return world().ally_spawn.get(pos_); }
 

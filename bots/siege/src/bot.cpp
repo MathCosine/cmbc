@@ -161,6 +161,10 @@ constexpr int kSoloDangerRounds = 40;
 constexpr bool kHoldMiddle = true;
 constexpr float kHoldBonus = 1.5f;
 constexpr std::uint64_t kClusterPlanFloor = 35000;
+// Fuel kept back after planning for the walk itself: with no fuel for a field, travel falls back
+// to a local search that costs about a full-map search (18k on a 100x80 map), and a turn that runs
+// dry finishes next round, losing that round (v29: 200+ such turns a game on 02tangle).
+constexpr std::uint64_t kMoveReserve = 15000;
 // v23 test against Inter Fish (0-5, 0-1,037 on 00vault, 0-1,120 on 00stampede): we won 2 of 77
 // fights and lost 81 champions to their 4; even outnumbering them we dealt 22k to their 37k, their
 // Marcella 106 a fight round to ours 36, Vesper Vale 69 to 19 (twice our gold by round 300). The
@@ -620,6 +624,12 @@ constexpr bool kEngageFar = false;
 constexpr bool kLeash = true;
 constexpr int kEngageRange = 5;
 constexpr int kMaxHold = 6;  // turns a ranged champion waits for an enemy before moving on
+
+// A planning floor raised so the walk afterwards still fits in the turn on big maps.
+std::uint64_t plan_floor(std::uint64_t base) {
+    const auto& W = world();
+    return std::max<std::uint64_t>(base, static_cast<std::uint64_t>(W.w) * W.h * 3 + kMoveReserve);
+}
 
 bool tank_type(bc::champion_type t) { return t == bc::champion_type::ryth || t == bc::champion_type::marcella; }
 
@@ -1207,12 +1217,20 @@ const SeenCamp* Bot::breach_camp() const {
     return nullptr;
 }
 
-std::vector<int> Bot::nearest_groups() const {
+const std::vector<int>& Bot::nearest_groups() const {
+    // Worked out once a turn: sorting 40 groups through the comparator cost up to 28,000 fuel,
+    // and target planning asks up to four times, so the squad and solo passes ran the turn dry.
+    if (nearest_round_ == round_ && nearest_pos_ == pos_) return nearest_;
     const auto& W = world();
-    std::vector<int> order(W.groups.size());
-    for (std::size_t i = 0; i < order.size(); ++i) order[i] = static_cast<int>(i);
-    std::sort(order.begin(), order.end(), [&](int a, int b) { return cheb(W.groups[a].anchor, pos_) < cheb(W.groups[b].anchor, pos_); });
-    return order;
+    std::vector<std::uint32_t> keys(W.groups.size());
+    for (std::size_t i = 0; i < keys.size(); ++i)
+        keys[i] = static_cast<std::uint32_t>(cheb(W.groups[i].anchor, pos_)) << 16 | static_cast<std::uint32_t>(i);
+    std::sort(keys.begin(), keys.end());
+    nearest_.resize(keys.size());
+    for (std::size_t i = 0; i < keys.size(); ++i) nearest_[i] = static_cast<int>(keys[i] & 0xFFFF);
+    nearest_round_ = round_;
+    nearest_pos_ = pos_;
+    return nearest_;
 }
 
 int Bot::altar_danger(vec2 altar) const {
@@ -3671,7 +3689,7 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
     const bool altar_reachable = any_altar_open();
     // Nearest first: the loop stops when fuel runs low, and in group order it used to stop
     // before reaching the camps beside us (01big-world: four island groups came first).
-    const auto order = nearest_groups();
+    const auto& order = nearest_groups();
     int best = -1;
     float best_score = 0;
     int early_best = -1;  // kSiegeEarly: best camp needing trips home before kSiegeFrom
@@ -3689,9 +3707,9 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
     std::array<signed char, 64> quick{};  // 0 not worked out yet, 1 quick, -1 not
     for (const int gi : order) {
         auto& g = W.groups[gi];
-        if (bc::fuel_remaining() < kSquadPlanFloor) break;
+        if (bc::fuel_remaining() < plan_floor(kSquadPlanFloor)) break;
         if (g.unreachable || (g.harmless && !kSquadClusters) || g.id > kMaxTarget || g.id == exclude || g.state == GroupState::reward) continue;
-        if (g.harmless && bc::fuel_remaining() < kClusterPlanFloor) continue;
+        if (g.harmless && bc::fuel_remaining() < plan_floor(kClusterPlanFloor)) continue;
         if (g.id == other_party_target_) continue;
         if (round_ < avoid_until_[g.id & 63]) continue;
         if (comms_.claimed_by_other(slot_, Task::solo, g.id, slots_)) continue;
@@ -3757,7 +3775,7 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
             best = g.id;
         }
     }
-    if (kRoutePlan && W.plan.ok && look_n >= 2 && bc::fuel_remaining() > kSquadPlanFloor && (!kLookCalm || calm())) {
+    if (kRoutePlan && W.plan.ok && look_n >= 2 && bc::fuel_remaining() > plan_floor(kSquadPlanFloor) && (!kLookCalm || calm())) {
         // One camp ahead: with the walking distances measured in the draft, a camp that leads on to
         // a good next one beats a dead end of the same worth.
         float best_look = 0;
@@ -3814,7 +3832,7 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
     // an enemy team to pick off.
     for (const int gi : order) {
         auto& g = W.groups[gi];
-        if (bc::fuel_remaining() < kSquadPlanFloor) break;
+        if (bc::fuel_remaining() < plan_floor(kSquadPlanFloor)) break;
         if (!g.harmless || g.unreachable || g.id > kMaxTarget || g.id == exclude || g.state == GroupState::reward) continue;
         if (g.id == other_party_target_) continue;
         if (comms_.claimed_by_other(slot_, Task::solo, g.id, slots_)) continue;
@@ -3955,13 +3973,13 @@ void Bot::choose_task(bc::champion& me) {
     const int solo_cap = kClusterSolos ? std::max(1, active - 2) : std::max(1, early ? active / 2 : active / 3);
     const bool may_solo = waiting || straggler || solos < solo_cap || squad < 0;
     const float my_dps = dps_of(type_, strength_, focus_);
-    const auto order = nearest_groups();
+    const auto& order = nearest_groups();
     int solo = -1;
     float solo_score = 0;
     for (const int gi : order) {
         auto& g = W.groups[gi];
         if (!may_solo) break;
-        if (kSoloFuelFirst && bc::fuel_remaining() < kSoloPlanFloor) break;
+        if (kSoloFuelFirst && bc::fuel_remaining() < plan_floor(kSoloPlanFloor)) break;
         if (g.unreachable || g.id > kMaxTarget || g.state == GroupState::reward || g.id == squad) continue;
         if (!g.harmless && !kSoloCamps && !waiting) continue;
         if (round_ < avoid_until_[g.id & 63]) continue;
@@ -3973,7 +3991,7 @@ void Bot::choose_task(bc::champion& me) {
         if (comms_.claimed_by_other(slot_, Task::solo, g.id, slots_) ||
             comms_.claimed_by_other(slot_, Task::capture, g.id, slots_))
             continue;
-        if (bc::fuel_remaining() < kSoloPlanFloor) break;
+        if (bc::fuel_remaining() < plan_floor(kSoloPlanFloor)) break;
         if (cheb(g.anchor, pos_) > 24) continue;
         if (kSoloSafe && unsafe_alone(g)) continue;
         if (kFieldCamp && field() && !in_field(g.anchor)) continue;
