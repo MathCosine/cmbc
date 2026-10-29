@@ -296,6 +296,8 @@ private:
     int attacked_round_ = -1000;      // last round we landed a basic attack
     int fruitless_ = 0;               // kChaseGiveUp: fight turns in a row with no hit either way
     int chase_ignore_until_ = -1000;
+    int way_pick_ = -1;            // kOnTheWay: the stop the last squad choice put first, or -1
+    int way_check_round_ = -1000;
     float dps_now(const bc::champion& c, bc::champion_type t, float strength, float focus) const;
     int capture_fail_ = 0;         // turns in a row we could not step toward our capture
     int capture_since_ = -1;       // round this capture claim started

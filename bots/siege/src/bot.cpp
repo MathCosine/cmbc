@@ -359,6 +359,29 @@ constexpr bool kPayoff = true;
 constexpr float kPayoffRounds = 3.f;
 constexpr bool kMirrorFarm = false;
 constexpr int kMirrorCalm = 60;
+// v35 ladder, 00pilgrimage against midnight: lanes split by holes, our three gold patches at y 13,
+// 22 and 31 lie on the walk to a 15-gem wolf camp at y 43. Scores charge each camp its whole walk, so
+// the patches (8 worth, 12 tiles off) lost to the camp (39 worth, 43 tiles off) though the walk to
+// them was free on the way there: the squad walked past them, cleared the camp at round 49, walked
+// back up for two of them, then stood at the camp waiting for its respawn (rounds 79-114) with the
+// third untouched until round 156. Their team cleared its lane top to bottom by round 58.
+// kOnTheWay: after the best camp B is chosen, a camp A up now goes first when it delays B by at most
+// kOnWayMax rounds (A's walk, clear and capture, then A to B on foot, less the time until B is
+// ready, its respawn included) and earns more per round of that delay than B does over its own
+// rounds. Patches on the way cost only their clear and capture; during a wait the delay can be none.
+// A delay of at most kOnWayFree (a clear and a capture) is taken whatever the camp is worth (40 gold
+// counts 6 against the wolf camp's 33, so even a patch on the path lost on worth alone). While the
+// squad is more than 10 tiles from its camp it looks again every kOnWayRecheck rounds, and only a
+// stop on the way can change its camp then (the first choice is made on round 2 with few distances).
+// Out of 140 against v35: 72, gold 6,453 to 5,544; 120/107/121 against Cassi & Issac / fishsim /
+// hunter (v35 121/105/127) with fewer deaths (5.5/7.3/10.1 a game, v35 6.4/9.6/10.8); with no
+// opponent 28.1 camps cleared by round 500 against 22.6, 1,000 gems in 1,156 rounds against 1,131
+// (the extra stops are mostly gold). 00pilgrimage against fishsim: 13 camps by round 220 against 8,
+// the lane cleared top to bottom. On (v36 test).
+constexpr bool kOnTheWay = true;
+constexpr int kOnWayMax = 14;
+constexpr int kOnWayFree = 7;
+constexpr int kOnWayRecheck = 6;
 constexpr float kSiegeEarlyEdge = 2.f;
 // Out of 140 on top of v30 (v30 build 70/124/105/123; this code with all four off 68/124/108/123):
 // floor 0.4 62/128/105/124 (deaths against fish 6.0/8.7, was 6.9/9.7); ward + flee 67/127/103/119;
@@ -3836,6 +3859,13 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
     float best_score = 0;
     int early_best = -1;  // kSiegeEarly: best camp needing trips home before kSiegeFrom
     float early_score = 0;
+    struct Way {
+        int id, d, wait;
+        float fixed, value, mods, rounds;
+        bool quick;
+    };
+    std::array<Way, 64> way{};  // kOnTheWay: every camp scored, for a stop on the way to the best
+    int n_way = 0;
     struct Look {
         float score, value, rounds;
         int id;
@@ -3898,6 +3928,8 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
         const float rounds = d + wait_g + fixed + extra;
         const float mods = squad_mods(g, contested_now);
         const float score = value / rounds * mods;
+        if (kOnTheWay && n_way < static_cast<int>(way.size()))
+            way[n_way++] = {g.id, d, wait_g, fixed + extra, value, mods, rounds, extra == 0 && !unlocks};
         if (kRoutePlan && W.plan.ok && g.id < 64) worth[g.id] = g.value(kGoldWeight) * mods;
         if (kRoutePlan && W.plan.ok) {
             // Keep the best few for the look ahead below.
@@ -3968,6 +4000,35 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
         }
     }
     if (kSiegeEarly && early_best >= 0 && early_score > kSiegeEarlyEdge * best_score) return early_best;
+    if (kOnTheWay && best >= 0) {
+        // A camp to take first on the way to the best one, or while it respawns.
+        const Way* b = nullptr;
+        for (int i = 0; i < n_way; ++i)
+            if (way[i].id == best) b = &way[i];
+        const auto* fb = b ? W.field(W.groups[best].poi, kPlanFuel) : nullptr;
+        if (b && fb) {
+            const float ready = static_cast<float>(b->d + b->wait);
+            const float rate_b = b->value / std::max(b->rounds, 1.f);
+            int pick = -1;
+            float pick_rate = rate_b;
+            for (int i = 0; i < n_way; ++i) {
+                const auto& a = way[i];
+                if (a.id == best || a.wait > 0 || !a.quick || a.mods < 0.6f) continue;
+                const int back = W.dist_on(*fb, W.groups[a.id].anchor);
+                if (back == kUnreached) continue;
+                const float delay = a.d + a.fixed + back - ready;
+                if (delay > kOnWayMax) continue;
+                // Free stops (on the path, or inside a respawn wait) rank first, nearest first.
+                const float rate = delay <= kOnWayFree ? 1000.f - static_cast<float>(a.d) : a.value / std::max(delay, 1.f);
+                if (rate > pick_rate) {
+                    pick_rate = rate;
+                    pick = a.id;
+                }
+            }
+            way_pick_ = pick;
+            if (pick >= 0) best = pick;
+        }
+    }
     if (best >= 0) return best;
     // Nothing dangerous is worth it (clusters only, or every camp respawning): the squad
     // farms clusters together rather than scattering, which leaves lone champions for
@@ -4082,6 +4143,17 @@ void Bot::choose_task(bc::champion& me) {
         if (deadly) avoid_until_[squad & 63] = round_ + 60;
         if ((stale || stalled || blocked_for_me || deadly) && !breaching) squad = -1;
         if (split && squad == other_party_target_ && !breaching) squad = -1;
+    }
+    if (kOnTheWay && squad >= 0 && !breaching && round_ - way_check_round_ >= kOnWayRecheck &&
+        dist_to_group(W.groups[squad]) > 10 && bc::fuel_remaining() > plan_floor(kSquadPlanFloor) + 15000) {
+        // Walking to the squad's camp: a stop on the way may have come into view.
+        way_check_round_ = round_;
+        way_pick_ = -1;
+        const int again = choose_squad_target(team_dps, team_hp, -1);
+        if (again >= 0 && again != squad && again == way_pick_) {
+            squad = again;
+            comms_.set_squad_target(squad);
+        }
     }
     if (squad < 0 && bc::fuel_remaining() > 30000) {
         float dps = team_dps, hp = team_hp;
