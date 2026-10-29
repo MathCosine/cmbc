@@ -88,6 +88,8 @@ public:
     BitGrid enemy_spawn;
     BitGrid altars_grid;
     BitGrid bushes;       // block sight; good places for a ward
+    BitGrid holes;        // block walking, not dashes (kHoleDash)
+    bool any_holes = false;
     bc::bitboard blocked_board;
     bc::bitboard camp_board;  // every camp spawn tile
     std::vector<Group> groups;

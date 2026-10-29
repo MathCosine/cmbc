@@ -238,6 +238,18 @@ constexpr int kCaptureTimeout = 40;  // 0 = off
 // always come from a camp just killed); mode 2 is even locally, where no bot ambushes from bushes.
 constexpr int kRecallSafe = 2;
 constexpr int kRecallCalm = 2;
+// v38 ladder against y: their champions recalled as soon as they saw us coming with no way home
+// but past us. kEscapeRecall: with a group we would lose to (more heads, or 1.3 times slower to
+// kill them than they us) seen 8-10 tiles away and none nearer, recall when no
+// enemy can reach us within kEscapeSlack turns (its one-turn reach included) and home is more
+// than kEscapeHome tiles away on foot; 1 only when an enemy is as near our spawn as we are
+// (walking home runs into it), 2 always.
+// It fires rarely (once in 700 rounds of a local 01starfish game). Out of 140 against v38: mode 1
+// 65, mode 2 69; against meta / fishsim / hunter mode 1 97/104/127, mode 2 93/103/125 (v38
+// 99/105/129). Off.
+constexpr int kEscapeRecall = 0;
+constexpr int kEscapeSlack = 5;
+constexpr int kEscapeHome = 15;
 // Fight inputs (v31 tests).
 // kEngageFloor: below this share of our health we no longer walk into a fight (engage an enemy up
 // to 5 tiles out, join a teammate's fight); we still hit whatever is already in reach. Health only
@@ -386,6 +398,16 @@ constexpr bool kOnTheWay = true;
 constexpr int kOnWayMax = 14;
 constexpr int kOnWayFree = 7;
 constexpr int kOnWayRecheck = 6;
+// v38 ladder against y, 01starvation (lost 472-866): four of our five earned nothing until round
+// ~230. The round-1 choice ran out of fuel after scoring one camp, the nearest in a straight line
+// (the 40-gold patch at 64,41: 15 tiles away, 114 on foot round a walled ring), and the squad walked
+// to it for 96 rounds while their team cleared its first camp at round 46. kFullScan: a squad camp
+// chosen from a scan cut short by fuel is chosen again on the next turns with the fuel to finish
+// the scan (for up to kFullScanRounds rounds). There the full scan picked the same patch: every
+// camp is 100+ tiles away on foot (g4 115, g7 104). Out of 140: 70 against v38; no opponent
+// 1,131 rounds to 1,000 gems (v38 1,131). Off.
+constexpr bool kFullScan = false;
+constexpr int kFullScanRounds = 10;
 // v36 ladder against Mundus, 00rushbait-v2 (lost 242-1,019; 9 deaths to 3): all four of ours stood
 // around one camp at a time, and from round 200 to 500 we cleared 4 camps to their ~12 while three
 // of ours earned nothing (their four spread over different camps, ours stayed in one squad: the v34
@@ -461,6 +483,20 @@ constexpr int kJackpotSiegeFrom = 100;
 // 110/110/126. Even locally, where every sparring bot fights as we do. Off.
 constexpr bool kTankAware = false;
 constexpr bool kStickyFocus = false;
+// Team fights (31 v37/v38 ladder games, deaths grouped into fights within 15 rounds and 10 tiles):
+// in single-death skirmishes they took 49% of the deaths, in 2-3 death fights 40%, in 4-6 death
+// fights 18% (82 of ours to 18). Alone, "retreat when in danger" saves us; in a crowd a champion
+// stays while a teammate is beside it and the fight is not lost by 60%, and teams with twice our
+// gold beat that, then the ones who stay die one at a time. With kBigFightEnemies+ enemies within 8:
+// kBigFightCaution counts a fight lost once their side wins as fast as ours (1.3 otherwise) and
+// clearly lost at 1.15 (1.6); kGroupRetreat retreats with a teammate within 6 who is retreating,
+// unless our next hit finishes the target. Out of 140 against v38 (v38 against meta / Cassi &
+// Issac / fishsim / hunter: 99/112/105/129): caution 71, 97/109/105/129; group retreat 66,
+// 97/111/108/132; both 60, 91/111/106/131. Locally we already win 63-68% of the deaths in 4+ death
+// fights against every sparring bot, so the ladder's team-fight losses do not show here. Off.
+constexpr bool kBigFightCaution = false;
+constexpr bool kGroupRetreat = false;
+constexpr int kBigFightEnemies = 3;
 constexpr float kOverkillRounds = 12.f;
 // Fuel the squad pass leaves for the stop-on-the-way check: each camp it looks at costs about 1,000
 // (the walk from the best camp to a camp tile searches the tiles around it). Without it the check
@@ -487,6 +523,23 @@ constexpr bool kLookOwnSide = false;
 constexpr int kLookTop = 5;
 constexpr int kLookNear = 6;
 constexpr float kLookDeadEnd = 0.85f;
+// v38 ladder against y, 01starvation: their dashers (Heart of Ruin, Vesper Vale, Vendetta) reached
+// camps 45 tiles away by round 46-57 while their Marcella and Tavi, like all of ours, walked the
+// 114 tiles round the hole fences (first camp at round 99-120). A local test confirmed it: a
+// dash (range 2 for all three) crosses a hole tile, never a wall. 29 maps have camps a hop over
+// one hole tile brings 15+ tiles closer (00road-of-riches 120 -> 21, 01starvation 114 -> 47,
+// some on 01islands and 01big-world only a dash reaches). kHoleDash: a dasher travelling along a
+// field hops over a hole when the landing is kHoleDashSave tiles closer than two steps on foot
+// would be; 2 also keeps the dash for such hops on maps with holes (no dash for plain travel).
+// 01starvation: our Vesper Vale hopped the hole line at round 26 (81 tiles from her camp to 11) and
+// took it at round 40, not 96. With no opponent, rounds to 1,000 gems: 1,124 against 1,131 over 70
+// maps (00reverse-spiral 1,460 -> 1,354, 01concentrated-wealth 1,334 -> 1,221, 01islands
+// 1,288 -> 1,172, 00road-of-riches 1,024 -> 974); mode 2 1,144 (plain travel dashes are worth
+// more). Out of 140 against v38: mode 1 73 (33 of 58 on maps with holes, 40 of 82 elsewhere),
+// mode 2 74; mode 1 against meta / fishsim / hunter 97/103/124 (v38 99/105/129). Vesper Vale is our
+// only dasher, so most of the team still walks. On, mode 1 (v39 test).
+constexpr int kHoleDash = 1;
+constexpr int kHoleDashSave = 4;
 constexpr bool kCombatDash = false;
 constexpr float kDashKill = 2.f;  // finish when its health is under this many of our hits
 // Fields on 8 of 70 maps. Out of 140 against the v24 test build / Cassi & Issac / fishsim / hunter:
@@ -527,6 +580,11 @@ constexpr int kScoutWardMove = 5;  // re-place once we are this far from our war
 // mostly one of ours caught by 2-3 enemies after round 300, while enemies 8-10 tiles out were
 // ignored. A group that outnumbers us at that range sends us toward a teammate, or away.
 // Off: about 20 fewer wins out of 560 against the sparring bots in both combinations tested.
+// Retest on v38 (crater ladder loss: 4 of ours waiting at a camp met their 5): identical to v38 in
+// every game, as kReachFights returned before it could run whenever no enemy was within 7. Fixed
+// (the reach return now needs an enemy within 7). Retest out of 140 against v38: 65, and 92/112/
+// 105/129 against meta / Cassi & Issac / fishsim / hunter (v38 99/112/105/129); with big-fight
+// caution 67, 97/108/108/126. Off.
 constexpr bool kEarlyWarning = false;
 // Capture guard. A capture needs the region held uncontested for 5 rounds and an enemy stepping
 // on it only resets the timer, but our capturer used to walk off to fight and the enemy took
@@ -2280,21 +2338,26 @@ bool Bot::fight_enemies(bc::champion& me) {
         }
         if (kReachFights) {
             bool any_reachable = false;
+            int close = 0;  // enemies within 7 (with none, the early warning below still runs)
             for (auto& e : enemies_) {
                 if (harmless_on_spawn(e) || cheb(e.pos, pos_) > 7) continue;
+                ++close;
                 const int d = cheb(e.pos, pos_);
                 const int walk = d <= 1 ? d : dist_from_me(e.pos);
                 e.across = walk == kUnreached || walk > d + kReachSlack;
                 if (!e.across) any_reachable = true;
             }
-            if (!any_reachable && !can_hit) {
+            if (close > 0 && !any_reachable && !can_hit) {
                 hold_turns_ = 0;
                 return false;
             }
         }
     }
     if (kInterceptTribute && intercept_tribute(me)) return true;
-    if (nearest_d > (kBurstModel ? 10 : 7)) return kEarlyWarning && nearest_d <= 10 && early_warning(me);
+    if (nearest_d > (kBurstModel ? 10 : 7)) {
+        if (kEscapeRecall > 0 && !kBurstModel && nearest_d <= 10 && escape_recall(me)) return true;
+        return kEarlyWarning && nearest_d <= 10 && early_warning(me);
+    }
     // Cassi and Issac are one pick and one life in two bodies: with kFairHeads they count half each.
     // Otherwise a team with them showed six heads to our five and our champions held back.
     auto head = [](const SeenChamp& c) {
@@ -2311,10 +2374,14 @@ bool Bot::fight_enemies(bc::champion& me) {
     const float we_need = enemy_hp / std::max(ally_dps, 1.f);
     const float they_need = ally_hp / std::max(enemy_dps, 1.f);
     // Under pressure we stop taking even fights: those are the ones we kept losing.
-    const bool losing = we_need > they_need * (pressured() ? 1.0f : 1.3f);
+    int crowd = 0;  // enemies within 8: a team fight once kBigFightEnemies or more
+    for (const auto& e : enemies_)
+        if (!harmless_on_spawn(e) && cheb(e.pos, pos_) <= 8) ++crowd;
+    const bool big_fight = crowd >= kBigFightEnemies;
+    const bool losing = we_need > they_need * (pressured() || (kBigFightCaution && big_fight) ? 1.0f : 1.3f);
     // A bag worth guarding (it goes to whoever kills us): leave as soon as the fight looks lost.
     const bool bag = kBagCaution && gems_ >= kBagCautionGems;
-    const bool clearly_losing = we_need > they_need * (bag ? 1.0f : pressured() ? 1.3f : 1.6f) || outnumbered;
+    const bool clearly_losing = we_need > they_need * (bag ? 1.0f : pressured() ? 1.3f : kBigFightCaution && big_fight ? 1.15f : 1.6f) || outnumbered;
     // A bag near a contested altar worth leaving our task for: big enough, bigger than ours, and a
     // fight we clearly win once the carrier's escort is counted too.
     auto worth_bag = [&](const SeenChamp& t) {
@@ -2351,6 +2418,7 @@ bool Bot::fight_enemies(bc::champion& me) {
         // finishing a camp and getting caught.
         if (!losing || on_spawn()) return false;
         set_status(Task::other, kHome);
+        if (kEscapeRecall > 0 && escape_recall(me)) return true;
         return step_away(me, threats);
     }
 
@@ -2423,6 +2491,14 @@ bool Bot::fight_enemies(bc::champion& me) {
         if (kHomeDefense && !retreating && losing && !can_finish && !on_spawn() && invaded() &&
             cheb(pos_, world().ally_centre) <= kHomeDefenseRange)
             retreating = true;
+        if (kGroupRetreat && big_fight && !retreating && !can_finish && !on_spawn())
+            for (int i = 0; i < slots_ && i < kMaxSlots; ++i) {
+                if (i == slot_) continue;
+                const auto st = comms_.slot(i);
+                if (!(st.task == Task::other && st.target == kHome)) continue;
+                for (const auto& a : allies_seen_)
+                    if (a.handle == allies_[i] && cheb(a.pos, pos_) <= 6) retreating = true;
+            }
         // A melee champion beside us walks and hits every turn: running only gives it free
         // hits, so hit back instead.
         if (retreating && !on_spawn() && nearest->range <= 1 && nearest_d <= 2 && target && cheb(target->pos, pos_) <= range_) retreating = false;
@@ -3084,6 +3160,36 @@ bool Bot::try_dash_along(bc::champion& me, const bc::distance_field& field, bool
         if (s.kind != bc::ability_kind::dash) continue;
         const std::uint16_t here = world().dist_on(field, pos_);
         if (here == kUnreached || here < 5) return false;
+        if (kHoleDash > 0 && world().any_holes) {
+            // A hop over a hole tile beside us, landing well down the field.
+            vec2 best = pos_;
+            int best_v = static_cast<int>(here) - 2 - kHoleDashSave;
+            for (auto d1 : kDirs) {
+                const vec2 m = pos_ + d1;
+                if (!world().in_bounds(m) || !world().holes.get(m)) continue;
+                for (auto d2 : kDirs) {
+                    const vec2 n = m + d2;
+                    if (n == pos_ || !free_tile(n)) continue;
+                    const int v = field.get(n);
+                    if (v < best_v) {
+                        best_v = v;
+                        best = n;
+                    }
+                }
+            }
+            if (best != pos_ && spell_ready(i)) {
+                bool wakes = false;
+                if (s.modifier > 0)
+                    for (const auto& c : camps_)
+                        if (cheb(c.pos, best) <= static_cast<int>(s.radius) + 1) wakes = true;
+                if (!wakes && cast_at(s, best)) {
+                    LOG("HOP r" << round_ << " " << bc::to_string(type_) << bc::to_string(pos_) << "->" << bc::to_string(best) << " " << here << "->" << best_v);
+                    pos_ = best;
+                    return true;
+                }
+            }
+            if (kHoleDash >= 2) return false;  // keep the dash for the next hole
+        }
         // Two greedy steps down the field.
         vec2 a = pos_, b = pos_;
         std::uint16_t da = here, db = here;
@@ -3547,6 +3653,47 @@ int Bot::best_altar(int& distance) {
     return best;
 }
 
+bool Bot::escape_recall(bc::champion& me) {
+    // Recall while every enemy is too far to cut it (kEscapeRecall).
+    if (on_spawn() || round_ - last_champ_hurt_round_ <= kRecallCalm || capturing_here()) return false;
+    // A fight we would lose: the enemies within 10 against us and the teammates within 8.
+    float adps = dps_of(type_, strength_, focus_), ahp = hp_, edps = 0, ehp = 0;
+    int theirs = 0, ours = 1;
+    for (const auto& a : allies_seen_)
+        if (cheb(a.pos, pos_) <= 8) {
+            adps += a.dps;
+            ahp += a.hp;
+            ++ours;
+        }
+    for (const auto& e : enemies_)
+        if (!harmless_on_spawn(e) && cheb(e.pos, pos_) <= 10) {
+            edps += e.dps;
+            ehp += e.hp;
+            ++theirs;
+        }
+    if (theirs <= ours && ehp / std::max(adps, 1.f) <= ahp / std::max(edps, 1.f) * 1.3f) return false;
+    auto& W = world();
+    const int home = W.dist(W.spawn_poi, pos_, 10000);
+    if (home == kUnreached || home <= kEscapeHome) return false;
+    bool cornered = kEscapeRecall >= 2;
+    for (const auto& e : enemies_) {
+        if (harmless_on_spawn(e)) continue;
+        if (cheb(e.pos, pos_) - std::max(e.reach, e.range + 1) < kEscapeSlack) return false;
+        // As near our spawn on foot as we are: walking home runs into them.
+        const int eh = W.dist(W.spawn_poi, e.pos, 10000);
+        if (eh != kUnreached && eh <= home) cornered = true;
+    }
+    if (!cornered) return false;
+    try {
+        me.recall();
+        mark("escape-recall");
+        LOG("ESCAPE r" << round_ << " " << bc::to_string(type_) << bc::to_string(pos_) << " home" << home);
+        return true;
+    } catch (const std::exception&) {
+    }
+    return false;
+}
+
 bool Bot::go_home(bc::champion& me, bool urgent) {
     if (on_spawn()) return false;
     // A wounded champion alone is the one a hunting team picks off.
@@ -3998,9 +4145,13 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
     std::array<float, 64> base_rounds{};
     std::array<float, 64> worth{};        // value times the score adjustments below
     std::array<signed char, 64> quick{};  // 0 not worked out yet, 1 quick, -1 not
+    scan_partial_ = false;
     for (const int gi : order) {
         auto& g = W.groups[gi];
-        if (bc::fuel_remaining() < plan_floor(kSquadPlanFloor) + (kOnTheWay ? kOnWayFuel : 0)) break;
+        if (bc::fuel_remaining() < plan_floor(kSquadPlanFloor) + (kOnTheWay ? kOnWayFuel : 0)) {
+            scan_partial_ = true;
+            break;
+        }
         if (g.unreachable || (g.harmless && !kSquadClusters) || g.id > kMaxTarget || g.id == exclude || g.state == GroupState::reward) continue;
         if (g.harmless && bc::fuel_remaining() < plan_floor(kClusterPlanFloor)) continue;
         if (g.id == other_party_target_) continue;
@@ -4277,6 +4428,17 @@ void Bot::choose_task(bc::champion& me) {
             comms_.set_squad_target(squad);
         }
     }
+    if (kFullScan && squad >= 0 && squad == partial_squad_ && !breaching && round_ - partial_round_ <= kFullScanRounds &&
+        bc::fuel_remaining() > plan_floor(kSquadPlanFloor) + 40000) {
+        // Chosen from a scan cut short by fuel: look at every camp now.
+        partial_squad_ = -1;
+        const int again = choose_squad_target(team_dps, team_hp, -1);
+        if (again >= 0 && again != squad) {
+            squad = again;
+            comms_.set_squad_target(squad);
+        }
+        if (scan_partial_) partial_squad_ = squad;  // still cut short: once more next turn
+    }
     if (squad < 0 && bc::fuel_remaining() > 30000) {
         float dps = team_dps, hp = team_hp;
         if (stalled) local_power(dps, hp);
@@ -4284,6 +4446,10 @@ void Bot::choose_task(bc::champion& me) {
         if (squad < 0 && kSafeOpening && round_ < kOpeningRounds) squad = choose_squad_target(dps, hp, stalled ? comms_.squad_target() : -1, true);
         if (squad >= 0 || !stalled) comms_.set_squad_target(squad);
         else squad = comms_.squad_target();
+        if (kFullScan && scan_partial_ && squad >= 0) {
+            partial_squad_ = squad;
+            partial_round_ = round_;
+        }
     }
 
     // Solo work is limited to harmless clusters nearby (and, with kSoloCamps, fighting camps

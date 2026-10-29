@@ -290,6 +290,7 @@ private:
     std::array<int, 16> enemy_healed_round_{};
     int hidden_grass(vec2 p) const;
     bool safe_wait_step(bc::champion& me, const Group& g, int keep);
+    bool escape_recall(bc::champion& me);
     bool crystal_escape(bc::champion& me, const std::vector<std::pair<vec2, int>>& threats);
     bool can_act_crystal(bc::champion& me) const;
     std::vector<bc::champion> enemy_roster_;  // kPowerPlay
@@ -303,6 +304,9 @@ private:
     int chase_ignore_until_ = -1000;
     int way_pick_ = -1;            // kOnTheWay: the stop the last squad choice put first, or -1
     int way_check_round_ = -1000;
+    bool scan_partial_ = false;    // kFullScan: the last squad scan stopped early for fuel
+    int partial_squad_ = -1;       // squad camp chosen from such a scan, chosen again later
+    int partial_round_ = -1000;
     float dps_now(const bc::champion& c, bc::champion_type t, float strength, float focus) const;
     int capture_fail_ = 0;         // turns in a row we could not step toward our capture
     int capture_since_ = -1;       // round this capture claim started
