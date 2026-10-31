@@ -32,6 +32,14 @@ void mark(const char* phase) {
 namespace {
 constexpr float kGoldWeight = 0.15f;
 constexpr int kCaptureRounds = 5;
+// v41, from the v40 ladder game against quantom on 02gift-wrapping (304-1,030): the squad farmed the
+// three gold camps by our spawn for 500 rounds (g1/g5/g9, 16-24 gems each) and never took the
+// 38-gem camp 15 tiles away or the 128-gem elk in the middle. Cause: a respawning group's camps
+// read as dead, so forecast() gave it 0 fight rounds and a camp about to respawn scored as if it
+// cost only the walk, the wait and the 5 capture rounds (g5 at round 232: 5.2 against the elk's 1.1).
+// kRespawnForecast: count a respawning group's camps at full health. Off until tested locally;
+// on in submissions/siege-v41-test.zip for the ladder test.
+constexpr bool kRespawnForecast = false;
 constexpr int kReplanRounds = 8;
 // Camps never heal, so a group too strong for one fight can be worn down over
 // several trips home to heal. Each trip spends about this share of team health.
@@ -4366,19 +4374,21 @@ bool Bot::capture(bc::champion& me) {
 Forecast Bot::forecast(const Group& g, float dps) const {
     dps = std::max(dps, 1.f);
     Forecast f{0, 0};
+    // kRespawnForecast: a respawning group comes back at full health (its camps read as dead).
+    const bool fresh = kRespawnForecast && g.state == GroupState::respawning;
     if (g.harmless) {
         for (const auto& c : g.camps)
-            if (c.alive_known) f.rounds += c.hp_known / dps;
+            if (c.alive_known || fresh) f.rounds += (fresh ? c.max_hp : c.hp_known) / dps;
         return f;
     }
     // Camps are pre-sorted strongest first: focus fire kills them in that order.
     float threat = 0;
     for (const auto& c : g.camps)
-        if (c.alive_known) threat += c.strength;
+        if (c.alive_known || fresh) threat += c.strength;
     for (const int i : g.by_strength) {
         const auto& c = g.camps[i];
-        if (!c.alive_known) continue;
-        const float t = c.hp_known / dps;
+        if (!c.alive_known && !fresh) continue;
+        const float t = (fresh ? c.max_hp : c.hp_known) / dps;
         f.rounds += t;
         f.damage += threat * t;
         threat -= c.strength;
