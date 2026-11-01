@@ -883,12 +883,17 @@ constexpr bool kCampWary = true;
 // 2,000 rounds and lost the tie-break: our four waited beside the elk at (13,50) while meta's stood
 // across the hole column within 10 tiles (wary), and theirs did the same. After kWaryTimeout rounds
 // held back by wariness at the same target with at least kWaryHealth of our health, engage anyway.
+// On top of v41 test 4, 40 rounds, out of 140 against test 4 / meta / hunter / fishsim (test 4:
+// 116/128/106): 74 / 114/128/106. 00rushbait-v2 is now won as A against meta (1,016-639) but lost
+// as B against meta and as A against fishsim, engaging while poked across the holes. Off.
 constexpr int kWaryTimeout = 0;
 constexpr float kWaryHealth = 0.7f;
 // kSpawnShy (2026-10-31): farm-wait walks up to camps it cannot see; beside the enemy spawn that
 // step lands in reach of champions standing there and the next turn's retreat steps back out (a
 // champion froze for 300 rounds on 01yellow-brick-road against the idle bot). Skip tiles in reach
 // of enemies on their spawn, and drop the target for kSpawnShyAvoid rounds when none are left.
+// On top of test 4: 69 / 114/127/106, farming 1,069 (1,063), 01yellow-brick-road 1,504 (1,166):
+// dropping the target did not stop the squad picking it again. Off.
 constexpr bool kSpawnShy = false;
 constexpr int kSpawnShyAvoid = 60;
 // v17 tests. Soft clusters: the soft opening also for gem and gold clusters (00lost-world: every
