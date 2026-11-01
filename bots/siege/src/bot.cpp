@@ -48,6 +48,9 @@ constexpr float kDeficitFloor = 0.f;
 // kDeficitRaid: behind on banked gems, camps on the enemy side lose their score penalty in the same
 // proportion (kRaidMax at kDeficitFull behind). kLeadBank: kLeadGems or more ahead, bank from
 // kLeadCarry gems so a late death cannot hand the lead back.
+// On top of v41 test 4, out of 140 against test 4 / meta / hunter / fishsim (test 4: 116/128/106):
+// raid 74 / 109/124/107; lead bank 72 / 114/130/104, farming 1,078 (1,063); both 71 / 112/127/108.
+// Off.
 constexpr bool kDeficitRaid = false;
 constexpr float kRaidMax = 1.f;
 constexpr bool kLeadBank = false;
@@ -876,6 +879,18 @@ constexpr bool kBreach = true;
 // farming 2% slower; engage far 56/113/82 (rushing enemies 7 tiles out splits the team): off.
 // Valuing gold at 0.08 instead of 0.15 (gems first): 67/113/85, with the other two 78/106/78: off.
 constexpr bool kCampWary = true;
+// kWaryTimeout (2026-10-31): on 00rushbait-v2 as Team A against meta every version played 0-0 for
+// 2,000 rounds and lost the tie-break: our four waited beside the elk at (13,50) while meta's stood
+// across the hole column within 10 tiles (wary), and theirs did the same. After kWaryTimeout rounds
+// held back by wariness at the same target with at least kWaryHealth of our health, engage anyway.
+constexpr int kWaryTimeout = 0;
+constexpr float kWaryHealth = 0.7f;
+// kSpawnShy (2026-10-31): farm-wait walks up to camps it cannot see; beside the enemy spawn that
+// step lands in reach of champions standing there and the next turn's retreat steps back out (a
+// champion froze for 300 rounds on 01yellow-brick-road against the idle bot). Skip tiles in reach
+// of enemies on their spawn, and drop the target for kSpawnShyAvoid rounds when none are left.
+constexpr bool kSpawnShy = false;
+constexpr int kSpawnShyAvoid = 60;
 // v17 tests. Soft clusters: the soft opening also for gem and gold clusters (00lost-world: every
 // cluster is in the contested middle; the squad walked 42 tiles to a corner elk and our first
 // clear came at round 265, theirs at 31). Bag caution: with kBagCautionGems or more, do not
@@ -3241,8 +3256,17 @@ bool Bot::fight_camps(bc::champion& me) {
                 if (!harmless_on_spawn(e) && (cheb(e.pos, g.anchor) <= 10 || cheb(e.pos, pos_) <= 10)) return true;
             return false;
         };
-        if (gid >= 0 && wary(gid)) return false;
-        if (gid < 0 && target_ >= 0 && (task_ == Task::farm || task_ == Task::solo) && wary(target_)) return false;
+        // kWaryTimeout: a standoff with enemies who never come is broken after a while.
+        auto hold = [&](int id) {
+            if (wary_target_ != id || round_ - wary_last_ > 5) {
+                wary_target_ = id;
+                wary_since_ = round_;
+            }
+            wary_last_ = round_;
+            return kWaryTimeout <= 0 || round_ - wary_since_ < kWaryTimeout || hp_ < max_hp_ * kWaryHealth;
+        };
+        if (gid >= 0 && wary(gid) && hold(gid)) return false;
+        if (gid < 0 && target_ >= 0 && (task_ == Task::farm || task_ == Task::solo) && wary(target_) && hold(target_)) return false;
     }
     if (gid < 0 && (task_ == Task::farm || task_ == Task::solo) && target_ >= 0) {
         const auto& g = W.groups[target_];
@@ -5105,7 +5129,20 @@ bool Bot::farm(bc::champion& me) {
             ring.clear();
             for (const auto& c : g.camps)
                 if (!tiles_seen || (c.alive_known && !visible_.get(c.pos))) ring.draw_chebyshev(c.pos, 1);
-            approach(me, ring);
+            bool ring_ok = true;
+            if (kSpawnShy) {
+                for (const auto& e : enemies_) {
+                    if (!W.enemy_spawn.get(e.pos)) continue;
+                    for (const vec2 t : ring.positions())
+                        if (cheb(t, e.pos) <= e.reach + 1) ring.set(t, false);
+                }
+                if (ring.is_empty()) {
+                    ring_ok = false;
+                    avoid_until_[target_ & 63] = round_ + kSpawnShyAvoid;
+                    plan_round_ = -1000;
+                }
+            }
+            if (ring_ok) approach(me, ring);
         } else if (hazardous(pos_, target_) && can_move_) {
             // Wait out of reach of the neighbouring groups; enemies may wake them.
             load_occupancy();

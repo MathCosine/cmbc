@@ -271,6 +271,7 @@ private:
         return a;
     }();
     std::array<int, 64> avoid_until_{};
+    int wary_target_ = -1, wary_since_ = 0, wary_last_ = -100;  // kWaryTimeout
     struct CachedDist {
         int dist = 0;
         int round = -1;
