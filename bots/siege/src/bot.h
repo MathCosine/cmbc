@@ -294,6 +294,7 @@ private:
     bool gather_hold(bc::champion& me);
     bool contested_altars_only() const;
     float gold_weight() const;
+    int gem_lead() const;
     int combo_hitters(const SeenChamp& e) const;
     bool escape_recall(bc::champion& me);
     bool crystal_escape(bc::champion& me, const std::vector<std::pair<vec2, int>>& threats);
@@ -315,6 +316,8 @@ private:
     mutable int contested_only_ = -1;  // kAltarControl: 1 when no altar is on our side
     mutable int gold_w_round_ = -1;    // kGemDeficit: gold_weight() worked out this round
     mutable float gold_w_ = 0.f;
+    mutable int lead_round_ = -1;      // gem_lead() worked out this round
+    mutable int lead_ = 0;
     bool camp_attack_ = false;     // attack_target called on a camp (kSaveReset)
     bool scan_partial_ = false;    // kFullScan: the last squad scan stopped early for fuel
     int partial_squad_ = -1;       // squad camp chosen from such a scan, chosen again later

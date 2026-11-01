@@ -45,6 +45,14 @@ constexpr float kGoldWeight = 0.15f;
 constexpr bool kGemDeficit = false;
 constexpr int kDeficitFull = 200;
 constexpr float kDeficitFloor = 0.f;
+// kDeficitRaid: behind on banked gems, camps on the enemy side lose their score penalty in the same
+// proportion (kRaidMax at kDeficitFull behind). kLeadBank: kLeadGems or more ahead, bank from
+// kLeadCarry gems so a late death cannot hand the lead back.
+constexpr bool kDeficitRaid = false;
+constexpr float kRaidMax = 1.f;
+constexpr bool kLeadBank = false;
+constexpr int kLeadGems = 150;
+constexpr int kLeadCarry = 12;
 constexpr int kCaptureRounds = 5;
 // v41, from the v40 ladder game against quantom on 02gift-wrapping (304-1,030): the squad farmed the
 // three gold camps by our spawn for 500 rounds (g1/g5/g9, 16-24 gems each) and never took the
@@ -64,6 +72,11 @@ constexpr int kReplanRounds = 8;
 // several trips home to heal. Each trip spends about this share of team health.
 constexpr float kTripShare = 0.45f;
 constexpr float kMaxTrips = 4.f;
+// Engine 2.0.0 on top of v41 test 4 (00stampede: the only gems are one 6-elk camp, first cleared
+// around round 700 with no opponent; elks keep their damage between trips): sieges from round 200
+// 69/140 against test 4, meta / hunter / fishsim 118/127/104 (test 4 116/128/106), farming 1,075
+// (1,063), 00stampede 2,000 (1,768: the first trip still came at round 453); with kMaxTrips 6 as
+// well 70, 119/127/106, 1,075; kMaxTrips 6 alone 72, 116/122/110, 1,067. Kept.
 constexpr int kSiegeFrom = 500;  // rounds before sieges (other than walled-in altars)
 constexpr float kMaxUnlockTrips = 8.f;  // opening a walled-in altar is worth more
 // Damage taken has to be healed later: a fight costing the whole team's health
@@ -181,6 +194,8 @@ constexpr int kStallRounds = 60;
 // camps and 25% on the enemy side, while the teams beating us farmed their own half first.
 // Until kOpeningRounds, contested and enemy-side camps are taken only when nothing else is left.
 constexpr bool kSafeOpening = true;
+// v41 test 4 with 150 rounds: 75/140 against test 4, meta / hunter / fishsim 111/132/108 (test 4
+// 116/128/106), farming 1,068 (1,063). With kOpeningContested 1.0 instead: 69, 114/129/103. Kept.
 constexpr int kOpeningRounds = 250;
 // Soft opening (v12): contested camps count at kOpeningContested of their score in the opening
 // instead of only as a fallback; enemy-side camps stay out.
@@ -661,6 +676,8 @@ constexpr bool kShareClears = false;
 // teammates are with it or already there (at most kRallyMax rounds).
 // Out of 140 (as above): push 64/118/103/122, farming 1,082, jackpot clears against fishsim 134-87
 // (v28 131-86); push and rally 62/118/105/121, 1,081, clears 161-57.
+// Engine 2.0.0 retest on top of v41 test 4, out of 140 against test 4 / meta / hunter / fishsim
+// (test 4: 116/128/106): push 71 / 110/130/105, farming 1,068 rounds (test 4 1,063). Off.
 constexpr bool kJackpotPush = false;
 constexpr float kJackpotBonus = 2.f;
 constexpr bool kRally = true;
@@ -1488,11 +1505,19 @@ float Bot::gold_weight() const {
     if (!kGemDeficit) return kGoldWeight;
     if (gold_w_round_ != round_) {
         gold_w_round_ = round_;
-        const int behind = static_cast<int>(bc::global_submitted_gems(team::enemy)) - static_cast<int>(bc::global_submitted_gems(team::ally));
-        const float t = std::clamp(static_cast<float>(behind) / kDeficitFull, 0.f, 1.f);
+        const float t = std::clamp(static_cast<float>(-gem_lead()) / kDeficitFull, 0.f, 1.f);
         gold_w_ = kGoldWeight * (1.f - t * (1.f - kDeficitFloor));
     }
     return gold_w_;
+}
+
+int Bot::gem_lead() const {
+    // Banked gems ahead of the other team (negative when behind), read once a round.
+    if (lead_round_ != round_) {
+        lead_round_ = round_;
+        lead_ = static_cast<int>(bc::global_submitted_gems(team::ally)) - static_cast<int>(bc::global_submitted_gems(team::enemy));
+    }
+    return lead_;
 }
 
 bool Bot::contested_altars_only() const {
@@ -1602,17 +1627,21 @@ int Bot::carry_gems() const {
             if (cheb(a, pos_) <= kControlRange) return kControlCarry;
     }
     if (pressured()) return kSmallBag;
-    if (kMarcellaBank && type_ == bc::champion_type::marcella) return kBankerCarry;
-    return kSmallBags ? kSmallCarry : kCarryGems;
+    const int carry = kMarcellaBank && type_ == bc::champion_type::marcella ? kBankerCarry : kSmallBags ? kSmallCarry : kCarryGems;
+    if (kLeadBank && gem_lead() >= kLeadGems) return std::min(carry, kLeadCarry);
+    return carry;
 }
 
 float Bot::enemy_side_factor(bool solo) const {
     // Ground near the enemy spawn is where we lose champions: shun it when a team is hunting
     // us, and farm it when the other team never shows up.
     if (pressured()) return solo ? 0.1f : 0.15f;
-    if (!kShunEnemySide) return solo ? 0.6f : 0.7f;
-    if (enemy_passive()) return solo ? 0.7f : 0.8f;
-    return solo ? 0.35f : 0.45f;
+    float f = !kShunEnemySide ? (solo ? 0.6f : 0.7f) : enemy_passive() ? (solo ? 0.7f : 0.8f) : (solo ? 0.35f : 0.45f);
+    if (kDeficitRaid) {
+        const float t = std::clamp(static_cast<float>(-gem_lead()) / kDeficitFull, 0.f, 1.f);
+        f += (std::max(f, kRaidMax) - f) * t;
+    }
+    return f;
 }
 
 bool Bot::banker_free_near(vec2 p, int range, int group) const {
