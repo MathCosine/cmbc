@@ -39,6 +39,9 @@ constexpr float kGoldWeight = 0.15f;
 // kGemDeficit (user idea, 2026-10-31): behind on banked gems, gold counts for less in camp scores,
 // scaling down with the deficit: at kDeficitFull or more gems behind it counts kDeficitFloor of
 // kGoldWeight (0: gems only); level or ahead, the full weight.
+// On top of test 3 (engine 2.0.0), out of 140 against test 3 / meta / hunter / fishsim (test 3:
+// 108/129/104): full at 100 behind 75 / 116/128/106; full at 200 71 / 115/130/100; with gold weight
+// 0.15 and full at 200 73 / 111/128/103. Test 4 = test 3 + this at 100 (siege-v41-test4.zip).
 constexpr bool kGemDeficit = false;
 constexpr int kDeficitFull = 200;
 constexpr float kDeficitFloor = 0.f;
