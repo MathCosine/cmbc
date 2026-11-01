@@ -37,8 +37,13 @@ constexpr int kCaptureRounds = 5;
 // 38-gem camp 15 tiles away or the 128-gem elk in the middle. Cause: a respawning group's camps
 // read as dead, so forecast() gave it 0 fight rounds and a camp about to respawn scored as if it
 // cost only the walk, the wait and the 5 capture rounds (g5 at round 232: 5.2 against the elk's 1.1).
-// kRespawnForecast: count a respawning group's camps at full health. Off until tested locally;
-// on in submissions/siege-v41-test.zip for the ladder test.
+// kRespawnForecast: count a respawning group's camps at full health.
+// Engine 2.0.0, out of 140: 76 against v40; meta / hunter / fishsim 105/123/98 (v40 109/127/99);
+// farming 1,105 rounds to 1,000 gems (v40 1,114; 02gift-wrapping 778 against 850, but
+// 01yellow-brick-road 1,670 against 1,132: Willow froze for 300 rounds stepping toward the road's
+// gold clusters beside the idle bot's spawn and back away from its champions, an old bug).
+// With kOpeningContested 0.7 (see there) it is about even with v40 against the sparring bots.
+// Off; on in submissions/siege-v41-test.zip (alone) and siege-v41-test2.zip (with 0.7).
 constexpr bool kRespawnForecast = false;
 constexpr int kReplanRounds = 8;
 // Camps never heal, so a group too strong for one fight can be worn down over
@@ -165,6 +170,12 @@ constexpr bool kSafeOpening = true;
 constexpr int kOpeningRounds = 250;
 // Soft opening (v12): contested camps count at kOpeningContested of their score in the opening
 // instead of only as a fallback; enemy-side camps stay out.
+// 0.7 with kRespawnForecast (v41 test 2, engine 2.0.0): on 02gift-wrapping the 128-gem middle elk
+// (32% of the map's gems) scored a third of its worth until round 250 while quantom took it from
+// round 39 (640 gems). Out of 140: 73 against kRespawnForecast alone; meta / hunter / fishsim
+// 109/122/103 (v40 109/127/99, kRespawnForecast alone 105/123/98); farming 1,081 rounds to 1,000
+// gems (v40 1,114), 02gift-wrapping 709 (gems by round 300: 332 against 180). Gold weight 0.1 on
+// top of kRespawnForecast: 73 against it, 105/123/100, farming 1,086 (not used).
 constexpr bool kSoftOpening = true;
 constexpr float kOpeningContested = 0.35f;
 // Contested gem clusters (no fight, quick) in the opening. v21 lost 0-1,002 on 00lost-world and
