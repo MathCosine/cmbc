@@ -36,6 +36,12 @@ namespace {
 // test 3 against test 2; meta / hunter / fishsim 108/129/104 (v40 109/127/99, test 2 109/122/103);
 // farming 1,063 rounds to 1,000 gems (v40 1,114, test 2 1,081). In submissions/siege-v41-test3.zip.
 constexpr float kGoldWeight = 0.15f;
+// kGemDeficit (user idea, 2026-10-31): behind on banked gems, gold counts for less in camp scores,
+// scaling down with the deficit: at kDeficitFull or more gems behind it counts kDeficitFloor of
+// kGoldWeight (0: gems only); level or ahead, the full weight.
+constexpr bool kGemDeficit = false;
+constexpr int kDeficitFull = 200;
+constexpr float kDeficitFloor = 0.f;
 constexpr int kCaptureRounds = 5;
 // v41, from the v40 ladder game against quantom on 02gift-wrapping (304-1,030): the squad farmed the
 // three gold camps by our spawn for 500 rounds (g1/g5/g9, 16-24 gems each) and never took the
@@ -1473,6 +1479,18 @@ bool Bot::on_my_camp() const {
 }
 
 bool Bot::enemy_passive() const { return round_ > 300 && !enemy_recent(250) && recent_team_deaths(400) == 0; }
+
+float Bot::gold_weight() const {
+    // kGemDeficit: the gold weight for camp scores, lower the further behind on banked gems we are.
+    if (!kGemDeficit) return kGoldWeight;
+    if (gold_w_round_ != round_) {
+        gold_w_round_ = round_;
+        const int behind = static_cast<int>(bc::global_submitted_gems(team::enemy)) - static_cast<int>(bc::global_submitted_gems(team::ally));
+        const float t = std::clamp(static_cast<float>(behind) / kDeficitFull, 0.f, 1.f);
+        gold_w_ = kGoldWeight * (1.f - t * (1.f - kDeficitFloor));
+    }
+    return gold_w_;
+}
 
 bool Bot::contested_altars_only() const {
     // No altar on our side: every bank is made where their champions can meet us (kAltarControl).
@@ -4608,7 +4626,7 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
             if (extra2 >= 0) {
                 const float fixed2 = forecast(g, team_dps).rounds + kCaptureRounds + heal_rounds(g, team_dps, team_hp);
                 const int wait2 = g.state == GroupState::respawning ? std::max(0, g.respawn_round - (round_ + d)) : 0;
-                const float score2 = g.value(kGoldWeight) / (d + wait2 + fixed2 + extra2) * squad_mods(g, contested_now);
+                const float score2 = g.value(gold_weight()) / (d + wait2 + fixed2 + extra2) * squad_mods(g, contested_now);
                 if (score2 > early_score) {
                     early_score = score2;
                     early_best = g.id;
@@ -4622,14 +4640,14 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
             base_rounds[g.id] = fixed;
             quick[g.id] = extra == 0 && !unlocks ? 1 : -1;
         }
-        const float value = g.value(kGoldWeight) + (unlocks ? 1000.f : 0.f);
+        const float value = g.value(gold_weight()) + (unlocks ? 1000.f : 0.f);
         const int wait_g = g.state == GroupState::respawning ? std::max(0, g.respawn_round - (round_ + d)) : 0;
         const float rounds = d + wait_g + fixed + extra;
         const float mods = squad_mods(g, contested_now);
         const float score = value / rounds * mods;
         if (kOnTheWay && n_way < static_cast<int>(way.size()))
             way[n_way++] = {g.id, d, wait_g, fixed + extra, value, mods, rounds, extra == 0 && !unlocks};
-        if (kRoutePlan && W.plan.ok && g.id < 64) worth[g.id] = g.value(kGoldWeight) * mods;
+        if (kRoutePlan && W.plan.ok && g.id < 64) worth[g.id] = g.value(gold_weight()) * mods;
         if (kRoutePlan && W.plan.ok) {
             // Keep the best few for the look ahead below.
             int at = std::min<int>(look_n, kLookTop - 1);
@@ -4675,7 +4693,7 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
                                 if (home != kUnreached) heal = kHealCost * fc.damage / std::max(team_hp, 1.f) * (2.f * home + 10.f);
                             }
                             base_rounds[h] = fc.rounds + kCaptureRounds + heal;
-                            worth[h] = gh.value(kGoldWeight) * squad_mods(gh, blocked_now);
+                            worth[h] = gh.value(gold_weight()) * squad_mods(gh, blocked_now);
                             quick[h] = 1;
                         }
                     }
@@ -4746,7 +4764,7 @@ int Bot::choose_squad_target(float team_dps, float team_hp, int exclude, bool al
         }
         const int d = dist_to_group(g);
         if (d == kUnreached || !g.alive_by(round_ + d + 5)) continue;
-        float score = g.value(kGoldWeight) / group_rounds(g, team_dps, d);
+        float score = g.value(gold_weight()) / group_rounds(g, team_dps, d);
         if (soft) score *= kOpeningClusters;
         if (kAltarZoneBias > 0) score *= altar_zone(g);
         if (kFieldCamp && in_field(g.anchor)) score *= kFieldBonus;
@@ -4971,7 +4989,7 @@ void Bot::choose_task(bc::champion& me) {
         if (!g.alive_by(round_ + d + 5)) continue;
         // A side job has to be done (there, clear, capture, back) before the squad's camp returns.
         if (waiting && 2 * d + forecast(g, my_dps).rounds + kCaptureRounds > squad_wait) continue;
-        float score = g.value(kGoldWeight) / (group_rounds(g, my_dps, d) + heal_rounds(g, my_dps, hp_));
+        float score = g.value(gold_weight()) / (group_rounds(g, my_dps, d) + heal_rounds(g, my_dps, hp_));
         if (soft) score *= kOpeningClusters;
         if (enemy_side(g)) score *= enemy_side_factor(true);
         score *= target_danger(g);
@@ -4991,7 +5009,7 @@ void Bot::choose_task(bc::champion& me) {
         auto& g = W.groups[squad];
         const int d = dist_to_group(g);
         if (d != kUnreached)
-            squad_share = g.value(kGoldWeight) / std::max(active, 1) / (group_rounds(g, team_dps, d) + heal_rounds(g, team_dps, team_hp));
+            squad_share = g.value(gold_weight()) / std::max(active, 1) / (group_rounds(g, team_dps, d) + heal_rounds(g, team_dps, team_hp));
     }
 
     if (solo >= 0 && (squad < 0 || solo_score > squad_share * 1.25f)) {
@@ -5229,7 +5247,7 @@ int Bot::next_stop(const Group& g) {
         if (opening_blocks(gh, false) && !(kSoftOpening && gh.contested)) continue;
         if (siege_rounds(gh, team_dps, team_hp, false) != 0) continue;
         const float wait = gh.state == GroupState::respawning ? std::max(0, gh.respawn_round - (round_ + finish + walk)) : 0.f;
-        const float rate = gh.value(kGoldWeight) / (walk + wait + forecast(gh, team_dps).rounds + kCaptureRounds);
+        const float rate = gh.value(gold_weight()) / (walk + wait + forecast(gh, team_dps).rounds + kCaptureRounds);
         if (rate > best_rate) {
             best_rate = rate;
             best = h;
